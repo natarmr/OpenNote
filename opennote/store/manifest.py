@@ -1,0 +1,43 @@
+"""Persistent manifest tracking indexed file hashes for change detection."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Dict
+
+
+class Manifest:
+    """Maps source file paths to their indexed SHA256 hashes."""
+
+    def __init__(self, manifest_file: Path):
+        self.manifest_file = manifest_file
+        self.data: Dict[str, str] = self._load()
+
+    def _load(self) -> Dict[str, str]:
+        if self.manifest_file.exists():
+            try:
+                with open(self.manifest_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                return {}
+        return {}
+
+    def save(self):
+        self.manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.manifest_file, "w", encoding="utf-8") as f:
+            json.dump(self.data, f, indent=2)
+
+    def is_indexed(self, source: str, file_hash: str) -> bool:
+        return self.data.get(source) == file_hash
+
+    def mark_indexed(self, source: str, file_hash: str):
+        self.data[source] = file_hash
+        self.save()
+
+    def clear(self):
+        if self.manifest_file.exists():
+            try:
+                self.manifest_file.unlink()
+            except Exception:
+                pass
+        self.data = {}

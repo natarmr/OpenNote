@@ -1,0 +1,1 @@
+"""Ingestion subsystem: parsers, chunking, and the ingest pipeline."""

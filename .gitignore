@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Test & tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local runtime data (never commit notebooks, keys, or docs)
+.opennote/
+auth.json
+chroma/
+exports/
+sessions/
+
+# Stray sample documents in the repo root
+/*.pdf

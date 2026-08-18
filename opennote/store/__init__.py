@@ -1,0 +1,1 @@
+"""Persistence subsystem: vector store + manifest."""

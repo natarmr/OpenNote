@@ -1,0 +1,1 @@
+"""TUI widgets (prompt bar, transcript)."""

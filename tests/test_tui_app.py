@@ -235,6 +235,67 @@ async def test_slash_popup_escape_hides(tmp_path):
         assert popup.display is False
 
 
+async def test_slash_popup_enter_selects_highlighted(tmp_path):
+    app = await _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("slash", "h")
+        await pilot.pause()
+        from opennote.tui.widgets.command_popup import CommandPopup
+
+        popup = app.screen.query_one("#command-popup", CommandPopup)
+        assert popup.display is True
+        assert [c.name for c in popup.commands] == ["help"]
+        await pilot.press("enter")
+        await pilot.pause()
+        from opennote.tui.dialogs import InfoDialog
+
+        assert isinstance(app.screen, InfoDialog)
+        body = app.screen.query_one("#dialog-body")
+        assert "Slash commands" in body.render().plain
+
+
+async def test_slash_popup_enter_with_multiple_matches(tmp_path):
+    app = await _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        from opennote.tui.widgets.command_popup import CommandPopup
+
+        popup = app.screen.query_one("#command-popup", CommandPopup)
+        await pilot.press("slash", "n")
+        await pilot.pause()
+        # matches registry order: new, notebooks, notebook
+        assert [c.name for c in popup.commands] == ["new", "notebooks", "notebook"]
+        await pilot.press("down")  # highlight "notebooks"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        from opennote.tui.dialogs import ItemListDialog
+
+        assert isinstance(app.screen, ItemListDialog)  # /notebooks, not raw "/n"
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_slash_popup_enter_single_match(tmp_path):
+    app = await _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("slash", "m")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        # /model with no arg opens the provider picker (if any configured).
+        from opennote.tui.dialogs import ItemListDialog
+        from opennote.tui.screens.chat import ChatScreen
+
+        if isinstance(app.screen, ItemListDialog):
+            await pilot.press("escape")
+            await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+        assert "Unknown command" not in _transcript_text(app.screen.transcript)
+
+
 async def test_export_writes_session_markdown(tmp_path):
     client = ScriptedClient(
         [ChatResponse(content="The answer is 42.")], provider_id="groq", model="gpt-x"

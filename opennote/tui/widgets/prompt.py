@@ -44,7 +44,7 @@ class PromptInput(TextArea):
     """A textarea that submits on Enter and lets Shift+Enter add a newline.
 
     While the slash-command popup is open, up/down navigate it, Tab completes
-    the highlighted command, and Escape hides it.
+    the highlighted command, Enter selects it, and Escape hides it.
     """
 
     class Submitted(Message):
@@ -63,6 +63,12 @@ class PromptInput(TextArea):
             return
         if event.key == "enter":
             event.stop()
+            if popup.display and popup.commands:
+                cmd = popup.selected()
+                if cmd is not None:
+                    popup.display = False
+                    self.post_message(self.Submitted(f"/{cmd.name}"))
+                    return
             self.post_message(self.Submitted(self.text))
             return
         await super()._on_key(event)

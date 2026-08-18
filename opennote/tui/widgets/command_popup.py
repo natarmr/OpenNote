@@ -2,7 +2,7 @@
 
 Shown while the prompt starts with ``/``; lists matching commands and lets the
 user highlight one with up/down. Tab completes (inserts the command text),
-Enter submits whatever is typed, Esc hides.
+Enter selects the highlighted command, Esc hides.
 """
 from __future__ import annotations
 

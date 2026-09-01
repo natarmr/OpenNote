@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# OpenNote Installer - ramratan.in
+# Usage: curl -fsSL https://ramratan.in/install | bash
+# This mirrors the opencode pattern: single-command install from anywhere
+
+set -euo pipefail
+
+# 1. Python version check (cross-platform: Windows/macOS/Linux)
+if ! command -v python3 &>/dev/null; then
+    echo "Python 3.10+ is required" >&2
+    exit 1
+fi
+
+# 2. Install OpenNote from hosted source in editable mode
+#    pip handles platform-appropriate wheel downloads automatically
+echo "📦 Installing OpenNote from ramratan.in..."
+pip install -e "https://ramratan.in/opennote-0.1.0.tar.gz#egg=opennote"
+
+# 3. Verify installation and confirm
+if command -v opennote &>/dev/null; then
+    echo "✅ OpenNote installed successfully!"
+    echo "Run: opennote --help"
+else
+    echo "⚠️  Installation may need re-running or check PATH"
+    exit 1
+fi

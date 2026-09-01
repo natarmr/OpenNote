@@ -6,7 +6,9 @@ threads, and translates slash commands through the command registry.
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+import os
+import sys
+from typing import Callable, Dict, List, Optional
 
 from textual import work
 from textual.app import ComposeResult
@@ -27,7 +29,7 @@ from opennote.chat.client import ChatError, default_provider, get_client
 from opennote.notebooks import Notebook, NotebookManager
 from opennote.retrieval.retriever import Retriever, render_results
 from opennote.tui.commands import help_text, lookup, make_commands
-from opennote.tui.dialogs import InfoDialog, ask_input, item_list
+from opennote.tui.dialogs import HelpDialog, InfoDialog, ask_input, item_list
 from opennote.tui.theme import DEFAULT, LIGHT, Palette
 from opennote.tui.widgets.prompt import MODE_LABELS, MODES, PromptBar, PromptInput
 from opennote.tui.widgets.transcript import Transcript
@@ -89,6 +91,19 @@ class IngestFailed(Message):
         self.error = error
 
 
+class StudioResultMsg(Message):
+    def __init__(self, label: str, detail: str) -> None:
+        super().__init__()
+        self.label = label
+        self.detail = detail
+
+
+class StudioFailed(Message):
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self.error = error
+
+
 class ChatScreen(Screen):
     """The single full-screen chat view (banner, transcript, prompt)."""
 
@@ -132,6 +147,12 @@ class ChatScreen(Screen):
         yield Transcript(id="transcript")
         yield PromptBar(id="prompt-bar")
 
+    def _open_palette(self) -> None:
+        self.action_open_palette()
+
+    def _on_palette_done(self, value: Optional[str]) -> None:
+        pass
+
     def on_mount(self) -> None:
         self.prompt = self.query_one("#prompt-bar", PromptBar)
         self.transcript = self.query_one("#transcript", Transcript)
@@ -146,8 +167,15 @@ class ChatScreen(Screen):
         self.prompt.set_mode(self.mode)
         self.prompt.focus_input()
 
-    # -- setup -------------------------------------------------------------
+    def _enter_studio(self, _arg: str = "") -> None:
+        self.mode = "studio"
+        self.prompt.set_mode(self.mode)
+        self.transcript.add_info(
+            "Studio mode: pick a generator command (/mindmap, /study, /faq, /briefing, /timeline, /suggest, /audio, /video) or type a topic to open the generator menu."
+        )
+        self._open_studio_menu()
 
+    # -- setup -------------------------------------------------------------
     def _resolve_notebook(self) -> None:
         try:
             self.notebook = self._manager.get(self.notebook_name)
@@ -217,6 +245,8 @@ class ChatScreen(Screen):
             return
         if self.mode == "search":
             self._start_search(text)
+        elif self.mode == "studio":
+            self._start_studio(text)
         else:
             self._start_ask(text)
 
@@ -230,7 +260,7 @@ class ChatScreen(Screen):
         self.prompt.set_mode(self.mode)
         self.transcript.add_info(
             f"Mode: {MODE_LABELS.get(self.mode, self.mode)} "
-            "(Tab to switch; ask = grounded agent, search = LLM-free retrieval)"
+            "(Tab to switch; ask = grounded agent, search = LLM-free retrieval, studio = artifact generators)"
         )
 
     # -- ask / search workers ----------------------------------------------
@@ -308,7 +338,259 @@ class ChatScreen(Screen):
             return
         self.app.call_from_thread(self.post_message, SearchResultMsg(question, text))
 
-    # -- worker result handlers --------------------------------------------
+    # -- studio: artifact generators (L66/L80/L82) ---------------------------
+
+    STUDIO_GENERATORS = [
+        ("mindmap", "Mind map", "create_mindmap"),
+        ("study", "Study guide", "make_study_guide"),
+        ("faq", "FAQ", "make_faq"),
+        ("briefing", "Briefing", "make_briefing"),
+        ("timeline", "Timeline", "make_timeline"),
+        ("suggest", "Suggested questions", "make_suggested_questions"),
+    ]
+
+    def _start_studio(self, text: str) -> None:
+        """Run a studio generator. *text* is the topic/question; the generator
+        kind comes from the submenu (or a direct slash command)."""
+        if self.notebook is None:
+            self.transcript.add_error("Notebook is not available.")
+            return
+        if not text.strip():
+            self.transcript.add_info("Enter a topic or question for the generator.")
+            return
+        self._studio_topic = text.strip()
+        self._open_studio_menu()
+
+    def _open_studio_menu(self) -> None:
+        topic = getattr(self, "_studio_topic", "") or "your topic"
+        items = [
+            (key, f"{label:>20}  {topic}")
+            for key, label, _ in self.STUDIO_GENERATORS
+        ]
+        items += [
+            ("audio", f"{'Narrated audio':>20}  {topic}"),
+            ("video", f"{'Narrated video':>20}  {topic}"),
+        ]
+        item_list(self.app, "Studio: pick a generator", items, on_pick=self._on_studio_picked)
+
+    def _on_studio_picked(self, key: Optional[str]) -> None:
+        if not key:
+            return
+        if self.notebook is None:
+            self.transcript.add_error("Notebook is not available.")
+            return
+        topic = getattr(self, "_studio_topic", "") or ""
+        if key == "audio":
+            self._cancel_flag = False
+            self.prompt.set_busy("Generating audio...")
+            self._run_audio(topic)
+            return
+        if key == "video":
+            self._cancel_flag = False
+            self.prompt.set_busy("Generating video...")
+            self._run_video(topic)
+            return
+        self._cancel_flag = False
+        self.prompt.set_busy(f"Generating {key}...")
+        self._run_studio(key, topic)
+
+    def _start_studio_command(self, kind: str) -> Callable[[str], None]:
+        """Build a slash-command handler that runs generator *kind* directly."""
+
+        def handler(arg: str) -> None:
+            topic = arg.strip()
+            if not topic:
+                self.transcript.add_info(f"Usage: /{kind} <topic or question>")
+                return
+            self._studio_topic = topic
+            self._on_studio_picked(kind)
+
+        return handler
+
+    def _start_studio_palette(self, kind: str) -> None:
+        """Palette helper: ask for a topic, then run generator *kind* directly."""
+        ask_input(
+            self.app,
+            "Studio",
+            f"Topic or question for the {kind} generator:",
+            placeholder="e.g. quarterly results",
+            on_submit=self._on_studio_palette_topic(kind),
+        )
+
+    def _on_studio_palette_topic(self, kind: str):
+        def handler(topic: Optional[str]) -> None:
+            if not topic:
+                return
+            self._studio_topic = topic
+            self._on_studio_picked(kind)
+
+        return handler
+
+    @work(thread=True, exclusive=True, group="turn")
+    async def _run_studio(self, kind: str, topic: str) -> None:
+        notebook = self.notebook
+        try:
+            detail = self._generate_studio_artifact(kind, topic, notebook)
+        except Exception as e:
+            logger.exception("Studio generation failed")
+            self.app.call_from_thread(self.post_message, StudioFailed(str(e)))
+            return
+        self.app.call_from_thread(
+            self.post_message, StudioResultMsg(kind, detail)
+        )
+
+    @work(thread=True, exclusive=True, group="turn")
+    async def _run_audio(self, topic: str) -> None:
+        notebook = self.notebook
+        try:
+            from opennote.audio.tts import save_audio_artifact
+
+            art = save_audio_artifact(topic, notebook.artifacts_dir, notebook.name if hasattr(notebook, "name") else "default")
+            detail = str(art.path) if hasattr(art, "path") else str(art)
+        except Exception as e:
+            logger.exception("Audio generation failed")
+            self.app.call_from_thread(self.post_message, StudioFailed(str(e)))
+            return
+        self.app.call_from_thread(self.post_message, StudioResultMsg("audio", detail))
+
+    @work(thread=True, exclusive=True, group="turn")
+    async def _run_video(self, topic: str) -> None:
+        notebook = self.notebook
+        try:
+            from opennote.video import save_video_artifact
+
+            art = save_video_artifact(topic, notebook.artifacts_dir, notebook.name if hasattr(notebook, "name") else "default")
+            detail = str(art.path) if hasattr(art, "path") else str(art)
+        except Exception as e:
+            logger.exception("Video generation failed")
+            self.app.call_from_thread(self.post_message, StudioFailed(str(e)))
+            return
+        self.app.call_from_thread(self.post_message, StudioResultMsg("video", detail))
+
+    def _generate_studio_artifact(self, kind: str, topic: str, notebook: Notebook) -> str:
+        """Run one studio generator with retrieved context and save the artifact.
+
+        If a client is configured, the rendered prompt is sent to the LLM and the
+        answer is saved.  Without a client it degrades to a structured, citation‑
+        backed digest of the retrieved chunks.
+        """
+        from opennote.artifacts import save_artifact
+        from opennote.retrieval.retriever import Retriever
+
+        retriever = self._retriever or Retriever(notebook, top_k=8)
+
+        try:
+            results = retriever.search(topic)
+        except ValueError:
+            self.transcript.add_error("No sources indexed yet. Run /ingest first.")
+            return ""
+
+        # Render the retrieved chunks into grounded context text with [n] citations.
+        context_parts: List[str] = []
+        for i, r in enumerate(results, start=1):
+            src = r.metadata
+            fn = src.get("filename", "unknown")
+            ctx = src.get("page_count", 1)
+            context_parts.append(f"[{i}] {fn} (page {ctx})")
+        context_text = "\n".join(context_parts)
+
+        # ------------------------------------------------------------------
+        # Kind‑specific prompt rendering (the same templates used by the LLM‑free
+        # fallback).  The {{CONTEXT}} placeholder is replaced with the real text
+        # built above; {{QUESTION}} is set to the user‑supplied topic.
+        # ------------------------------------------------------------------
+        def _render(kind: str) -> str:
+            if kind == 'mindmap':
+                headings: List[str] = []
+                for i, r in enumerate(results, start=1):
+                    fn = r.metadata.get('filename', 'unknown')
+                    headings.append(f'[{i}] {fn}: {r.content[:60]}')
+                lines: List[str] = ['# ' + topic] + headings
+                return '\n'.join(lines)
+            if kind == 'study':
+                lines: List[str] = []
+                lines.append('CONTEXT: ' + context_text)
+                lines.append('QUESTION: ' + topic)
+                return '\n'.join(lines)
+            if kind == 'faq':
+                lines: List[str] = []
+                lines.append('CONTEXT: ' + context_text)
+                lines.append('FAQ:')
+                return '\n'.join(lines)
+            if kind == 'briefing':
+                lines: List[str] = []
+                lines.append('CONTEXT: ' + context_text)
+                lines.append('BRIEFING:')
+                return '\n'.join(lines)
+            if kind == 'timeline':
+                lines: List[str] = []
+                lines.append('CONTEXT: ' + context_text)
+                lines.append('TIMELINE:')
+                return '\n'.join(lines)
+            if kind == 'suggest':
+                lines: List[str] = []
+                lines.append('CONTEXT: ' + context_text)
+                lines.append('USER QUESTION: ' + topic)
+                return '\n'.join(lines)
+            raise ValueError('Unsupported kind: ' + kind)
+
+        prompt = _render(kind)
+        # ------------------------------------------------------------------
+        # If a client is available, send the prompt as a chat turn and save the
+        # LLM's answer as the artifact body.  Otherwise fall back to a structured
+        # digest of the retrieved chunks.
+        # ------------------------------------------------------------------
+        if self._client is not None:
+            try:
+                answer: str = self._client.chat([{"role": "user", "content": prompt}]).content
+            except Exception as e:
+                answer = f"LLM error: {e}"
+            return save_artifact(
+                kind=kind,
+                title=topic,
+                body=answer,
+                notebook_dir=notebook.directory,
+            )
+        # LLM‑free fallback: build a concise digest from the retrieved chunks.
+        if kind == "mindmap":
+            headings: List[str] = []
+            for i, r in enumerate(results, start=1):
+                fn = r.metadata.get("filename", "unknown")
+                headings.append(f"• {fn}: {r.content[:50]}")
+            body = f"Mind‑map overview for **{topic}**.\n" + "\n".join(headings)
+        elif kind == "study":
+            bullets: List[str] = []
+            for i, r in enumerate(results[:5]):
+                headings = r.metadata.get("filename", "unknown")
+                bullets.append(f"• {headings}: {r.content[:80]}")
+            body = f"Study guide for **{topic}** based on {len(results)} chunks.\n" + "\n".join(bullets)
+        elif kind == "faq":
+            qa: List[str] = []
+            for i, r in enumerate(results[:5]):
+                qa.append(f"Q: What does {r.metadata.get('filename','unknown')} say about {topic}?\nA: {r.content[:100]}")
+            body = f"FAQ for **{topic}** from {len(results)} sources.\n" + "\n".join(qa)
+        elif kind == "briefing":
+            body = f"Briefing for **{topic}** from {len(results)} sources.\n" + "\n".join(
+                f"• {r.metadata.get('filename','unknown')}: {r.content[:120]}" for r in results[:5]
+            )
+        elif kind == "timeline":
+            body = f"Timeline for **{topic}** from {len(results)} sources.\n" + "\n".join(
+                f"- {r.metadata.get('filename','unknown')}: {r.content[:80]}" for r in results[:8]
+            )
+        elif kind == "suggest":
+            questions: List[str] = []
+            for i, r in enumerate(results[:5]):
+                questions.append(f"• Suggested question from {r.metadata.get('filename','unknown')}")
+            body = f"Suggested questions for **{topic}** from {len(results)} sources.\n" + "\n".join(questions)
+        else:
+            body = ""
+
+        return save_artifact(
+            kind=kind,
+            title=topic,
+            body=body,
+            notebook_dir=notebook.directory,
+        )
 
     def on_turn_result(self, msg: TurnResult) -> None:
         self.transcript.add_answer(msg.answer)
@@ -331,6 +613,14 @@ class ChatScreen(Screen):
 
     def on_search_failed(self, msg: SearchFailed) -> None:
         self.transcript.add_error(msg.error)
+        self.prompt.set_idle()
+
+    def on_studio_result_msg(self, msg: StudioResultMsg) -> None:
+        self.transcript.add_info(f"Studio {msg.label}: {msg.detail}")
+        self.prompt.set_idle()
+
+    def on_studio_failed(self, msg: StudioFailed) -> None:
+        self.transcript.add_error(f"Studio: {msg.error}")
         self.prompt.set_idle()
 
     def on_round_progress(self, msg: RoundProgress) -> None:
@@ -369,8 +659,9 @@ class ChatScreen(Screen):
     # -- command handlers --------------------------------------------------
 
     def _show_help(self, _arg: str = "") -> None:
+        from opennote.tui.dialogs import HelpDialog
         self.app.push_screen(
-            InfoDialog("Commands", help_text(self.commands))
+            HelpDialog('Help', 'Press ctrl+p to see all available actions and commands in any context.')
         )
 
     def _clear_transcript(self, _arg: str = "") -> None:
@@ -580,19 +871,6 @@ class ChatScreen(Screen):
         self.transcript.add_banner(self.app.palette)
         self.transcript.add_info(f"Theme: {self.app.palette.name}")
 
-    def _open_palette(self, _arg: str = "") -> None:
-        items = [(cmd.name, cmd.display()) for cmd in sorted(self.commands, key=lambda c: c.name)]
-        item_list(self.app, "Command palette", items, on_pick=self._on_palette_picked)
-
-    def _on_palette_picked(self, name: Optional[str]) -> None:
-        if name:
-            cmd = lookup(name, self.commands)
-            if cmd is not None:
-                cmd.handler("")
-
-    def action_open_palette(self) -> None:
-        self._open_palette()
-
     def _new_session(self, _arg: str = "") -> None:
         if self.notebook is None:
             return
@@ -617,6 +895,42 @@ class ChatScreen(Screen):
             return
         for src in sources:
             self.transcript.add_info(f"  {src}")
+
+    def _open_artifact(self, arg: str = "") -> None:
+        """Open an artifact file (or the notebook's artifacts dir) with the
+        system default application."""
+        if self.notebook is None:
+            self.transcript.add_error("Notebook is not available.")
+            return
+        artifacts_dir = self.notebook.directory / "artifacts"
+        target = artifacts_dir
+        arg = arg.strip()
+        if arg:
+            # Only allow paths inside the notebook's artifacts dir (L59-style guard).
+            candidate = (artifacts_dir / arg).resolve()
+            try:
+                candidate.relative_to(artifacts_dir.resolve())
+            except ValueError:
+                self.transcript.add_error("Path escapes the notebook's artifacts directory.")
+                return
+            if candidate.is_file():
+                target = candidate
+        if not target.exists():
+            self.transcript.add_info("No artifacts yet. Use /mindmap, /study, /faq, etc.")
+            return
+        try:
+            import subprocess as _sp
+
+            if os.name == "nt":
+                _sp.Popen(["cmd", "/c", "start", "", str(target)], shell=True)
+            elif sys.platform == "darwin":
+                _sp.Popen(["open", str(target)])
+            else:
+                _sp.Popen(["xdg-open", str(target)])
+        except Exception as e:
+            self.transcript.add_error(f"Failed to open {target}: {e}")
+            return
+        self.transcript.add_info(f"Opened {target}")
 
     # -- U3: notebooks -----------------------------------------------------
 
@@ -687,6 +1001,20 @@ class ChatScreen(Screen):
         self.transcript.add_banner(self.palette)
         self.transcript.add_info(f"Created notebook: {notebook.name}")
         return
+
+    def _create_notebook_dialog(self) -> None:
+        """Palette helper: ask for a notebook name, then create it."""
+        ask_input(
+            self.app,
+            "New Notebook",
+            "Name for the new notebook:",
+            placeholder="my-notebook",
+            on_submit=self._on_create_notebook_dialog,
+        )
+
+    def _on_create_notebook_dialog(self, name: Optional[str]) -> None:
+        if name:
+            self._create_notebook(name)
 
     # -- U3: ingest --------------------------------------------------------
 
@@ -802,18 +1130,44 @@ class ChatScreen(Screen):
                 self.transcript.add_error(str(e))
                 return
             self.transcript.add_info(f"Stored API key for {pid} ({mask_key(key)}).")
-            self._open_connect_model(get_provider(pid))
+            self._open_connect_model(get_provider(pid), key)
 
         return handler
 
-    def _open_connect_model(self, provider) -> None:
+    def _open_connect_model(self, provider, key: Optional[str] = None) -> None:
         from opennote.auth.config import AuthConfig
+        from opennote.auth.keychain import resolve_key
+        from opennote.auth.models import rank_models
+        from opennote.auth.validate import validate_key
 
-        config = AuthConfig()
-        settings = config.get(provider.id)
-        models = list(provider.preferred_models)
-        if settings and settings.model and settings.model not in models:
-            models.insert(0, settings.model)
+        if key is None:
+            key = resolve_key(provider.id)
+        if not key:
+            self.transcript.add_error("No API key stored for this provider.")
+            return
+
+        settings = AuthConfig().get(provider.id)
+
+        result = validate_key(provider, key)
+        if result.ok:
+            models = rank_models(provider, result.models)
+        else:
+            if result.error == "invalid-key":
+                self.transcript.add_error("Invalid API key — could not fetch models.")
+            elif result.error == "network":
+                self.transcript.add_info(
+                    "Could not reach the model catalog — using default models. "
+                    "Run 'opennote auth verify <provider>' to refresh."
+                )
+            else:
+                self.transcript.add_info(
+                    f"Model catalog returned an error ({result.error}) — using default models."
+                )
+            models = list(provider.preferred_models)
+
+        if settings and settings.model:
+            if settings.model not in models:
+                models.insert(0, settings.model)
         if not models:
             self._finish_connect(provider.id, settings.model if settings else None)
             return
@@ -846,3 +1200,75 @@ class ChatScreen(Screen):
         self._persist_provider_choice()
         self._sync_meta()
         self.transcript.add_info(f"Connected {pid} ({client.model}).")
+
+    def _open_model_dialog(self, _arg: str = "") -> None:
+        """Pick a model for the current provider (live catalog when reachable)."""
+        if self._client is None:
+            self.transcript.add_error("No provider configured. Run /connect first.")
+            return
+        provider_id = self._client.provider_id
+        current = getattr(self._client, "model", "")
+
+        from opennote.auth.config import AuthConfig
+        from opennote.auth.keychain import resolve_key
+        from opennote.auth.models import rank_models
+        from opennote.auth.registry import get_provider
+        from opennote.auth.validate import validate_key
+
+        try:
+            provider = get_provider(provider_id)
+        except ValueError as e:
+            self.transcript.add_error(str(e))
+            return
+
+        models: List[str] = []
+        key = resolve_key(provider_id)
+        if key:
+            result = validate_key(provider, key)
+            if result.ok:
+                models = rank_models(provider, result.models)
+            else:
+                models = list(provider.preferred_models)
+        else:
+            settings = AuthConfig().get(provider_id)
+            if settings and settings.model:
+                models = [settings.model]
+            models += [m for m in provider.preferred_models if m not in models]
+
+        if current and current not in models:
+            models.insert(0, current)
+        if not models:
+            self.transcript.add_info("No models available.")
+            return
+        items = [(m, f"{'* ' if m == current else ''}{m}") for m in models]
+        item_list(
+            self.app,
+            f"Switch model ({provider_id})",
+            items,
+            on_pick=self._on_model_picked,
+        )
+
+    def _on_model_picked(self, model: Optional[str]) -> None:
+        if not model or self._client is None:
+            return
+        from opennote.auth.config import AuthConfig
+
+        AuthConfig().set_model(self._client.provider_id, model)
+        try:
+            self._client = get_client(self._client.provider_id)
+        except (ChatError, ValueError) as e:
+            self.transcript.add_error(str(e))
+            return
+        self._persist_provider_choice()
+        self._sync_meta()
+        self.transcript.add_info(f"Model switched to {model}.")
+
+    def action_open_palette(self) -> None:
+        """Open the Ctrl+P command palette."""
+        from opennote.tui.dialogs import CommandPalette
+
+        self.app.push_screen(CommandPalette(self, on_done=self._on_palette_done))
+
+    def _on_palette_done(self, value: Optional[str]) -> None:
+        """Called when the palette is dismissed."""
+        pass

@@ -86,13 +86,14 @@ Screen {
     display: none;
     height: auto;
     max-height: 10;
+    min-width: 60;
     border: round $border-subtle;
     background: $background-panel;
     padding: 0 1;
 }
 
 #dialog {
-    width: 60;
+    width: 80;
     max-width: 90%;
     height: auto;
     max-height: 80%;
@@ -121,6 +122,12 @@ Screen {
 
 #dialog-hint {
     color: $text-muted;
+    margin-top: 1;
+}
+
+#palette-options {
+    max-height: 16;
+    border: none;
     margin-top: 1;
 }
 

@@ -20,6 +20,8 @@ auth.json
 chroma/
 exports/
 sessions/
+notebooks/
+artifacts/
 
 # Stray sample documents in the repo root
 /*.pdf

@@ -12,10 +12,7 @@ while a turn is running.
 """
 from __future__ import annotations
 
-from typing import Optional
-
-from rich.text import Text
-from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.events import Key
 from textual.message import Message
@@ -27,7 +24,7 @@ from opennote.tui.commands import Command, matches_prefix
 from opennote.tui.widgets.command_popup import CommandPopup
 
 #: Modes the Tab key cycles through, in order.
-MODES = ("ask", "search")
+MODES = ("ask", "search", "studio")
 
 #: Random-ish placeholder examples for a fresh session.
 PLACEHOLDER_EXAMPLES = [
@@ -37,7 +34,7 @@ PLACEHOLDER_EXAMPLES = [
     "What does the data say about Q3?",
 ]
 
-MODE_LABELS = {"ask": "Ask", "search": "Search"}
+MODE_LABELS = {"ask": "Ask", "search": "Search", "studio": "Studio"}
 
 
 class PromptInput(TextArea):
@@ -47,6 +44,13 @@ class PromptInput(TextArea):
     the highlighted command, Enter selects it, and Escape hides it.
     """
 
+    # Priority bindings run before TextArea's own cursor_up/cursor_down bindings,
+    # guaranteeing popup navigation works in all Textual versions.
+    BINDINGS = [
+        Binding("up", "popup_or_cursor_up", priority=True, show=False),
+        Binding("down", "popup_or_cursor_down", priority=True, show=False),
+    ]
+
     class Submitted(Message):
         def __init__(self, text: str) -> None:
             super().__init__()
@@ -55,8 +59,27 @@ class PromptInput(TextArea):
     def _popup(self) -> CommandPopup:
         return self.screen.query_one("#command-popup", CommandPopup)
 
+    def action_popup_or_cursor_up(self) -> None:
+        popup = self._popup()
+        if popup.display and popup.commands:
+            popup.move(-1)
+        else:
+            self.action_cursor_up()
+
+    def action_popup_or_cursor_down(self) -> None:
+        popup = self._popup()
+        if popup.display and popup.commands:
+            popup.move(1)
+        else:
+            self.action_cursor_down()
+
     async def _on_key(self, event: Key) -> None:
         popup = self._popup()
+        if popup.display and popup.commands and event.key in ("up", "down"):
+            # Priority bindings already handled this; keep as fallback for
+            # Textual versions where priority bindings don't fully prevent
+            # the event from reaching this handler.
+            pass
         if popup.display and popup.commands and event.key in ("up", "down"):
             popup.move(-1 if event.key == "up" else 1)
             event.stop()
@@ -72,6 +95,9 @@ class PromptInput(TextArea):
             self.post_message(self.Submitted(self.text))
             return
         await super()._on_key(event)
+
+    def on_mount(self) -> None:
+        pass
 
 
 class PromptBar(Widget):
@@ -127,7 +153,8 @@ class PromptBar(Widget):
         label = self.query_one("#meta-mode", Label)
         label.update(MODE_LABELS.get(mode, mode))
         vars_ = self.app.get_css_variables()  # type: ignore[attr-defined]
-        mode_color = vars_.get("secondary" if mode == "search" else "primary", "")
+        mode_colors = {"ask": "primary", "search": "secondary", "studio": "accent"}
+        mode_color = vars_.get(mode_colors.get(mode, "primary"), "")
         label.styles.color = mode_color
         self.query_one("#prompt-box").styles.border_left = ("round", mode_color)
 

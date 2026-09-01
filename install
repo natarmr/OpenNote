@@ -11,10 +11,10 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
-# 2. Install OpenNote from hosted source in editable mode
+# 2. Install OpenNote from hosted source
 #    pip handles platform-appropriate wheel downloads automatically
 echo "📦 Installing OpenNote from ramratan.in..."
-pip install -e "https://ramratan.in/opennote-0.1.0.tar.gz#egg=opennote"
+pip install "https://ramratan.in/opennote-0.1.0.tar.gz#egg=opennote"
 
 # 3. Verify installation and confirm
 if command -v opennote &>/dev/null; then

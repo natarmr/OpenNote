@@ -49,15 +49,25 @@ def ask(
             model=client.model,
         )
 
-    context = build_context(results)
-    user_message = build_user_message(question, context)
+    # Tagged sources with late constraint (defense 1)
+    from opennote.chat.prompt import build_tagged_context, build_tagged_user_message, SYSTEM_PRE_TAGGED, SYSTEM_POST_TAGGED
+    from opennote.validation.citation import validate_freeform_answer
+
+    tagged = build_tagged_context(results)
+    system = f"{SYSTEM_PRE_TAGGED}\n\nSources:\n{tagged}\n\n{SYSTEM_POST_TAGGED}" if tagged else f"{SYSTEM_PRE_TAGGED}\n\n{SYSTEM_POST_TAGGED}"
+    user_message = build_tagged_user_message(question, tagged)
     raw = client.complete(
-        SYSTEM_TEMPLATE,
+        system,
         [{"role": "user", "content": user_message}],
         max_tokens=max_tokens,
     )
 
     answer = raw.strip()
+    # Gate free-form through validator (defense 3)
+    chunk_map = {str(i+1): r for i, r in enumerate(results)}
+    if answer.lower() != "sources don't contain this" and results:
+        if not validate_freeform_answer(answer, chunk_map):
+            answer = "sources don't contain this"
     footer, sources_used = used_sources(answer, results)
     if footer:
         answer = f"{answer}\n\n{footer}"

@@ -53,13 +53,13 @@ def test_ask_appends_validated_sources_footer():
 
 def test_ask_grounds_on_retrieved_context():
     results = [_result("a.pdf", "alpha")]
-    client = FakeClient("ok")
+    client = FakeClient("ok [1]")
     out = ask(StubNotebook(), "question?", client=client, retriever=FakeRetriever(results))
     system, messages, max_tokens = client.calls[0]
     assert "question?" in messages[0]["content"]
-    assert "[a.pdf, p.4-5]" in messages[0]["content"]
-    assert "alpha" in messages[0]["content"]
-    assert "ONLY the provided context" in system
+    assert '<source id="1"' in system
+    assert "alpha" in system
+    assert "ONLY" in system
 
 
 def test_ask_no_results_returns_canned_answer():
@@ -71,7 +71,8 @@ def test_ask_no_results_returns_canned_answer():
 
 def test_ask_preserves_answer_without_markers():
     results = [_result("a.pdf", "alpha")]
+    # Plain answer without citation and no overlap is gated to abstention
     client = FakeClient("Plain answer, no citations.")
     out = ask(StubNotebook(), "q", client=client, retriever=FakeRetriever(results))
-    assert out.answer == "Plain answer, no citations."
+    assert out.answer == "sources don't contain this"
     assert out.sources == []

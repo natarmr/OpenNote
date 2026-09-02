@@ -66,6 +66,28 @@ TOOL_SCHEMAS: Dict[str, dict] = {
             "required": ["url"],
         },
     },
+    "submit_grounded_answer": {
+        "description": "Submit a grounded answer with claims tied to sources. Use ONLY this to answer; each claim must have source_ids and an exact quote_span from a source.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "claims": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string", "description": "Single grounded claim"},
+                            "source_ids": {"type": "array", "items": {"type": "string"}, "description": "Source ids like '1','2'"},
+                            "quote_span": {"type": "string", "description": "Exact substring from the source"},
+                        },
+                        "required": ["text", "source_ids", "quote_span"],
+                    },
+                },
+                "summary": {"type": "string", "description": "Optional summary grounded in claims"},
+            },
+            "required": ["claims"],
+        },
+    },
 }
 
 
@@ -136,9 +158,20 @@ def _read_page(retriever: Retriever, url: str) -> List[SearchResult]:
     """Fetch *url* and return chunked SearchResults."""
     if not url or not str(url).strip():
         raise ValueError("read_page requires a non-empty 'url' string.")
+    url = str(url).strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValueError("read_page requires an http(s) URL.")
+    # Block shell injection patterns (defense 4: never accept shell strings from model)
+    if any(c in url for c in [";", "|", "&", "`", "$", "\n", "\r"]):
+        raise ValueError("URL contains invalid characters.")
     from opennote.websearch import read_page as _rp
 
     return _rp(url)
+
+
+def _submit_grounded_answer(retriever: Retriever, claims=None, summary=None):
+    # Validation happens in loop via citation validator; just echo back for tool result
+    return {"claims": claims or [], "summary": summary}
 
 
 # Mapping from tool name → function → List[SearchResult]
@@ -147,6 +180,7 @@ _TOOL_DISPATCH: Dict[str, Any] = {
     "list_sources": _list_sources,
     "web_search": _web_search,
     "read_page": _read_page,
+    "submit_grounded_answer": _submit_grounded_answer,
 }
 
 

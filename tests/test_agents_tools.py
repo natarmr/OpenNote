@@ -25,7 +25,7 @@ def _result(filename="a.pdf", content="alpha"):
 
 
 def test_schemas_have_both_tools():
-    assert set(TOOL_SCHEMAS) == {"search", "list_sources", "web_search", "read_page"}
+    assert set(TOOL_SCHEMAS) == {"search", "list_sources", "web_search", "read_page", "submit_grounded_answer"}
     assert "query" in TOOL_SCHEMAS["search"]["parameters"]["required"]
     assert TOOL_SCHEMAS["search"]["parameters"]["properties"]["query"]["type"] == "string"
 

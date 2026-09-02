@@ -21,14 +21,25 @@ def _transcript_path(notebook) -> Path:
     return notebook.directory / TRANSCRIPT_FILE
 
 
+def _backfill_provenance(msgs: List[Dict]) -> List[Dict]:
+    """Lazy backfill: user -> trusted, assistant/tool -> derived if missing."""
+    for m in msgs:
+        if "provenance" not in m:
+            role = m.get("role")
+            if role == "user":
+                m["provenance"] = "trusted"
+            else:
+                m["provenance"] = "derived"
+    return msgs
+
+
 def load_transcript(notebook) -> List[Dict]:
     """Return messages list for *notebook* (empty if none). Migrates legacy sessions if needed."""
-    # Lazy migration: if transcript.json absent but sessions/ exists, seed from most recent session
     tpath = _transcript_path(notebook)
     if not tpath.exists():
         migrated = _migrate_legacy_sessions(notebook)
         if migrated is not None:
-            return migrated
+            return _backfill_provenance(migrated)
         return []
     try:
         with open(tpath, "r", encoding="utf-8") as f:
@@ -41,14 +52,16 @@ def load_transcript(notebook) -> List[Dict]:
     if isinstance(data, dict):
         msgs = data.get("messages", [])
         if isinstance(msgs, list):
-            return msgs
+            return _backfill_provenance(msgs)
     if isinstance(data, list):
-        return data
+        return _backfill_provenance(data)
     return []
 
 
 def save_transcript(notebook, messages: List[Dict]) -> None:
     """Persist *messages* for *notebook* (trimmed, atomic)."""
+    # Ensure provenance tagged
+    messages = _backfill_provenance(list(messages))
     messages = trim_messages(messages)
     tpath = _transcript_path(notebook)
     tpath.parent.mkdir(parents=True, exist_ok=True)
@@ -62,10 +75,31 @@ def save_transcript(notebook, messages: List[Dict]) -> None:
 
 def append_messages(notebook, messages: List[Dict]) -> List[Dict]:
     """Append *messages* to notebook transcript and persist. Returns new list."""
+    # Tag provenance: user -> trusted, others -> derived (if not already set)
+    for m in messages:
+        if "provenance" not in m:
+            m["provenance"] = "trusted" if m.get("role") == "user" else "derived"
     existing = load_transcript(notebook)
     existing.extend(messages)
     save_transcript(notebook, existing)
     return load_transcript(notebook)
+
+
+def history_for_prompt(messages: List[Dict]) -> List[Dict]:
+    """Wrap derived messages as <source> data for next prompt (never as instructions)."""
+    out: List[Dict] = []
+    for m in messages:
+        prov = m.get("provenance", "derived" if m.get("role") != "user" else "trusted")
+        content = m.get("content", "")
+        if isinstance(content, str) and prov == "derived":
+            # Wrap derived content as citable data
+            wrapped = f'<source provenance="derived">\n{content.replace("</source>", "<\\/source>")}\n</source>'
+            nm = dict(m)
+            nm["content"] = wrapped
+            out.append(nm)
+        else:
+            out.append(m)
+    return out
 
 
 def clear_transcript(notebook) -> None:

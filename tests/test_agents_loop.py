@@ -140,7 +140,10 @@ def test_history_is_passed_through():
     history = [{"role": "user", "content": "earlier"}, {"role": "assistant", "content": "earlier answer"}]
     out = agent_turn(StubNotebook(), "q2", client=client, retriever=FakeRetriever(results=[]), history=history)
     sent = client.sent[0]["messages"]
-    assert [m["content"] for m in sent[:2]] == ["earlier", "earlier answer"]
+    assert sent[0]["content"] == "earlier"
+    # assistant (derived) is wrapped as <source> data
+    assert "earlier answer" in sent[1]["content"]
+    assert "<source" in sent[1]["content"]
     assert sent[-1]["content"] == "q2"
 
 
@@ -213,8 +216,8 @@ def test_two_searches_numbered_globally():
     retriever = FakeRetriever(results=[_result("a.pdf", "aaa"), _result("b.pdf", "bbb")])
     out = agent_turn(StubNotebook(), "q", client=client, retriever=retriever)
     second_tool_msg = [m for m in out.messages if m["role"] == "tool"][1]
-    assert "[3] [a.pdf, p.2]" in second_tool_msg["content"], "second search must offset past the first"
-    assert "[4] [b.pdf, p.2]" in second_tool_msg["content"]
+    assert 'id="3"' in second_tool_msg["content"], "second search must offset past the first"
+    assert 'id="4"' in second_tool_msg["content"]
     assert "[2] [b.pdf, p.2]" in out.result.answer
 
 
@@ -360,5 +363,5 @@ def test_web_search_results_wrapped_in_untrusted_delimiters(monkeypatch):
     finally:
         set_cached(None)
     tool_msg = [m for m in client.sent[-1]["messages"] if m.get("role") == "tool"][-1]
-    assert "<untrusted-content>" in tool_msg["content"]
-    assert "</untrusted-content>" in tool_msg["content"]
+    assert "<source" in tool_msg["content"]
+    assert "web content" in tool_msg["content"]

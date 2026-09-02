@@ -99,6 +99,13 @@ def _index_chunks(
     batch_size: int,
 ) -> int:
     """Delete old chunks for ``source``, index new ones, and mark manifest."""
+    # Telemetry scan (defense 6) — log but do not block
+    try:
+        from opennote.security.scan import scan_and_log
+
+        scan_and_log(notebook, chunks)
+    except Exception:
+        pass
     # Always clear stale chunks first — even when nothing was extracted — so
     # a file that was truncated/re-ingested doesn't keep serving old chunks.
     vector_mgr.delete_source(source)

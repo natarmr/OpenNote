@@ -386,23 +386,23 @@ async def test_palette_no_matches_shows_single_placeholder(tmp_path):
         await pilot.pause()
 
 
-async def test_palette_filter_runs_studio_topic_dialog(tmp_path):
+async def test_palette_filter_runs_studio_mode(tmp_path):
     app = await _make_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        from opennote.tui.dialogs import CommandPalette, InputDialog
+        from opennote.tui.dialogs import CommandPalette, ItemListDialog
 
         assert isinstance(app.screen, CommandPalette)
-        await pilot.press(*"study guide")
+        await pilot.press(*"studio mode")
         await pilot.pause()
-        await pilot.press("down")  # skip the section header, highlight the entry
+        await pilot.press("down")
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        # The Study Guide palette entry asks for a topic via an InputDialog.
-        assert isinstance(app.screen, InputDialog)
+        # Studio Mode enters studio and opens the generator picker
+        assert isinstance(app.screen, ItemListDialog)
         await pilot.press("escape")
         await pilot.pause()
 

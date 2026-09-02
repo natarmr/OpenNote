@@ -103,43 +103,7 @@ def make_palette(screen) -> List[PaletteEntry]:
             section="Notebook",
             action=lambda: screen._create_notebook_dialog(),
         ),
-        # ---- Studio ----
-        PaletteEntry(
-            title="Mind Map",
-            description="Generate a mind map from a topic",
-            section="Studio",
-            action=lambda: screen._start_studio_palette("mindmap"),
-        ),
-        PaletteEntry(
-            title="Study Guide",
-            description="Generate a study guide from a topic",
-            section="Studio",
-            action=lambda: screen._start_studio_palette("study"),
-        ),
-        PaletteEntry(
-            title="FAQ",
-            description="Generate an FAQ from a topic",
-            section="Studio",
-            action=lambda: screen._start_studio_palette("faq"),
-        ),
-        PaletteEntry(
-            title="Briefing",
-            description="Generate a briefing from a topic",
-            section="Studio",
-            action=lambda: screen._start_studio_palette("briefing"),
-        ),
-        PaletteEntry(
-            title="Timeline",
-            description="Generate a timeline from a topic",
-            section="Studio",
-            action=lambda: screen._start_studio_palette("timeline"),
-        ),
-        PaletteEntry(
-            title="Suggested Questions",
-            description="Get suggested questions on a topic",
-            section="Studio",
-            action=lambda: screen._start_studio_palette("suggest"),
-        ),
+
         # ---- Appearance ----
         PaletteEntry(
             title="Toggle Theme",

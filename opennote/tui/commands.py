@@ -47,7 +47,7 @@ def make_commands(screen) -> List[Command]:
         Command("connect", "Connect a provider (key + model)", screen._start_connect, arg_hint="<provider>", category="Provider"),
         Command("ask", "Switch to ask mode", screen._set_mode_ask, category="Mode"),
         Command("search", "Switch to search mode", screen._set_mode_search, category="Mode"),
-        Command("studio", "Enter studio mode for artifact generators", screen._enter_studio, category="Studio"),
+        Command("studio", "Enter studio mode for artifact generators", screen._enter_studio, category="Mode"),
         Command("mindmap", "Generate a mind map", screen._start_studio_command("mindmap"), arg_hint="<topic>", category="Studio"),
         Command("study", "Generate a study guide", screen._start_studio_command("study"), arg_hint="<topic>", category="Studio"),
         Command("faq", "Generate an FAQ", screen._start_studio_command("faq"), arg_hint="<topic>", category="Studio"),

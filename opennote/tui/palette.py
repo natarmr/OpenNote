@@ -95,7 +95,7 @@ def make_palette(screen) -> List[PaletteEntry]:
             title="Switch Notebook",
             description="Open another notebook (sources shown)",
             section="Notebook",
-            submenu=lambda: screen._open_notebooks_dialog(),
+            submenu=lambda: screen._open_notebook_dialog(),
         ),
         PaletteEntry(
             title="New Notebook",

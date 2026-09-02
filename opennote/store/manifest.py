@@ -51,6 +51,11 @@ class Manifest:
         self.data[source] = file_hash
         self.save()
 
+    def remove(self, source: str):
+        if source in self.data:
+            del self.data[source]
+            self.save()
+
     def clear(self):
         if self.manifest_file.exists():
             try:

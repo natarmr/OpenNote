@@ -2,12 +2,17 @@
 
 A notebook is a self-contained folder on disk:
     <home>/notebooks/<name>/
-        notebook.json          # name, embedding model, created, sources
+        notebook.json          # name, embedding model, created, sources, project, transcript
+        transcript.json        # conversation history (notebook == session)
         chroma/                # ChromaDB store + per-collection manifest
 
 The embedding model identity lives in notebook.json so a notebook never
-silently mixes embedding spaces.
+silently mixes embedding spaces. Each notebook is scoped to the directory
+where it was created (project), with per-directory listing.
+
+Each notebook holds at most MAX_SOURCES sources.
 """
+
 from __future__ import annotations
 
 import json
@@ -22,6 +27,7 @@ from opennote.store.vectors import DEFAULT_EMBED_MODEL
 
 COLLECTION_NAME = "documents"
 NOTES_DIR_NAME = "notebooks"
+MAX_SOURCES = 5
 
 #: Notebook names must be safe on every filesystem: no separators, no "..",
 #: no empty strings, no Windows device names.
@@ -53,6 +59,22 @@ def default_home() -> Path:
     return Path.home() / ".opennote"
 
 
+def _norm_project(p: str) -> str:
+    """Normalize project path for comparison (case-insensitive on Windows)."""
+    if not p:
+        return ""
+    # On Windows normcase lowercases; on POSIX it's a no-op.
+    return os.path.normcase(os.path.normpath(p))
+
+
+def current_project() -> str:
+    """Return the current working directory as project key."""
+    try:
+        return str(Path.cwd().resolve())
+    except Exception:
+        return str(Path.cwd())
+
+
 @dataclass
 class Notebook:
     name: str
@@ -60,6 +82,10 @@ class Notebook:
     embed_model: str = DEFAULT_EMBED_MODEL
     created: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     sources: List[str] = field(default_factory=list)
+    project: str = ""
+    updated: str = ""
+    provider_id: str = ""
+    model: str = ""
 
     @property
     def store_dir(self) -> Path:
@@ -73,12 +99,20 @@ class Notebook:
     def meta_file(self) -> Path:
         return self.directory / "notebook.json"
 
+    @property
+    def transcript_file(self) -> Path:
+        return self.directory / "transcript.json"
+
     def to_dict(self) -> Dict:
         return {
             "name": self.name,
             "embed_model": self.embed_model,
             "created": self.created,
             "sources": self.sources,
+            "project": self.project,
+            "updated": self.updated,
+            "provider_id": self.provider_id,
+            "model": self.model,
         }
 
     @classmethod
@@ -89,12 +123,26 @@ class Notebook:
             embed_model=data.get("embed_model", DEFAULT_EMBED_MODEL),
             created=data.get("created", ""),
             sources=list(data.get("sources", [])),
+            project=data.get("project", ""),
+            updated=data.get("updated", ""),
+            provider_id=data.get("provider_id", ""),
+            model=data.get("model", ""),
         )
 
     def save(self):
         from opennote.fsutil import atomic_write_json
 
+        # Keep updated timestamp fresh
+        if not self.updated:
+            self.updated = datetime.now(timezone.utc).isoformat()
+        else:
+            # Bump updated on every save (callers may have already set it)
+            pass
         atomic_write_json(self.meta_file, self.to_dict())
+
+    def touch_updated(self):
+        self.updated = datetime.now(timezone.utc).isoformat()
+        self.save()
 
 
 class NotebookManager:
@@ -112,13 +160,42 @@ class NotebookManager:
                 try:
                     notebooks.append(self._load(entry))
                 except (json.JSONDecodeError, OSError):
-                    # One corrupt notebook must not break 'opennote list'.
                     import logging
 
                     logging.getLogger("opennote.notebooks").warning(
                         "Skipping unreadable notebook at '%s'.", entry
                     )
         return notebooks
+
+    def list_for_project(self, project: str | None = None) -> List[Notebook]:
+        """List notebooks for *project* (cwd if None). Legacy notebooks with
+        empty project are visible in every directory."""
+        if project is None:
+            project = current_project()
+        norm = _norm_project(project)
+        result: List[Notebook] = []
+        for nb in self.list():
+            if not nb.project:
+                result.append(nb)
+            elif _norm_project(nb.project) == norm:
+                result.append(nb)
+        # Most recently updated first
+        result.sort(key=lambda n: n.updated or n.created, reverse=True)
+        return result
+
+    def next_notebook_name(self, project: str | None = None) -> str:
+        """Return next free 'notebook-N' name for *project*."""
+        if project is None:
+            project = current_project()
+        existing = {nb.name for nb in self.list_for_project(project)}
+        # Also check global to avoid collision (names are global unique on disk)
+        existing_global = {nb.name for nb in self.list()}
+        n = 1
+        while True:
+            cand = f"notebook-{n}"
+            if cand not in existing_global:
+                return cand
+            n += 1
 
     def get(self, name: str) -> Notebook:
         validate_notebook_name(name)
@@ -129,7 +206,12 @@ class NotebookManager:
             )
         return self._load(directory)
 
-    def create(self, name: str, embed_model: str = DEFAULT_EMBED_MODEL) -> Notebook:
+    def create(
+        self,
+        name: str,
+        embed_model: str = DEFAULT_EMBED_MODEL,
+        project: str | None = None,
+    ) -> Notebook:
         validate_notebook_name(name)
         directory = self.notebooks_dir / name
         if directory.exists():
@@ -141,9 +223,28 @@ class NotebookManager:
             raise FileExistsError(
                 f"Notebook '{name}' already exists (case-insensitive match)."
             )
-        notebook = Notebook(name=name, directory=directory, embed_model=embed_model)
-        notebook.save()
+        if project is None:
+            project = current_project()
+        now = datetime.now(timezone.utc).isoformat()
+        notebook = Notebook(
+            name=name,
+            directory=directory,
+            embed_model=embed_model,
+            project=project,
+            created=now,
+            updated=now,
+        )
+        # Use atomic write directly to avoid double touch
+        from opennote.fsutil import atomic_write_json
+
+        directory.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(notebook.meta_file, notebook.to_dict())
         return notebook
+
+    def create_next(self, project: str | None = None, embed_model: str = DEFAULT_EMBED_MODEL) -> Notebook:
+        """Create next auto-numbered notebook for *project*."""
+        name = self.next_notebook_name(project)
+        return self.create(name, embed_model=embed_model, project=project)
 
     def delete(self, name: str):
         validate_notebook_name(name)
@@ -170,7 +271,7 @@ class NotebookManager:
         old_dir.rename(new_dir)
         notebook = self._load(new_dir)
         notebook.name = new
-        notebook.save()
+        notebook.touch_updated()
         return notebook
 
     @staticmethod

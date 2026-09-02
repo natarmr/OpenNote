@@ -147,6 +147,13 @@ def ingest(
 
     # --- URL source (no local hash caching) ---
     if isinstance(target, str) and target.startswith(("http://", "https://")):
+        from opennote.notebooks import MAX_SOURCES
+
+        if target not in notebook.sources and len(notebook.sources) >= MAX_SOURCES:
+            raise ValueError(
+                f"Notebook '{notebook.name}' already has {MAX_SOURCES} sources (limit). "
+                f"Remove a source or create a new notebook."
+            )
         try:
             chunks = parse_url(target, spec)
             if not chunks:
@@ -155,6 +162,8 @@ def ingest(
             count = _index_chunks(vector_mgr, notebook, target, chunks, batch_size)
             logger.info(f"Indexed {count} chunk(s) from URL '{target}'.")
             return count
+        except ValueError:
+            raise
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to ingest URL '{target}': {e}", exc_info=True)
             return 0
@@ -176,6 +185,19 @@ def ingest(
     if not files_to_process:
         logger.info("All discovered files are already up-to-date in the vector store.")
         return 0
+
+    # Enforce 5-source cap upfront (atomic rejection)
+    from opennote.notebooks import MAX_SOURCES
+
+    new_distinct = [s for _, s in [(f, str(f.resolve())) for f, _ in files_to_process] if s not in notebook.sources]
+    # Deduplicate
+    new_distinct = list(dict.fromkeys(new_distinct))
+    if len(notebook.sources) + len(new_distinct) > MAX_SOURCES:
+        raise ValueError(
+            f"Notebook '{notebook.name}' has {len(notebook.sources)} source(s); "
+            f"ingesting {len(new_distinct)} new source(s) would exceed the {MAX_SOURCES}-source limit. "
+            f"Remove a source or create a new notebook."
+        )
 
     total_indexed = 0
     for f, f_hash in files_to_process:
@@ -206,5 +228,35 @@ def ingest(
 
 def _record_source(notebook: Notebook, source: str):
     if source not in notebook.sources:
+        from opennote.notebooks import MAX_SOURCES
+
+        if len(notebook.sources) >= MAX_SOURCES:
+            raise ValueError(
+                f"Notebook '{notebook.name}' already has {MAX_SOURCES} sources (limit). "
+                f"Remove a source or create a new notebook."
+            )
         notebook.sources.append(source)
+        notebook.save()
+
+
+def remove_source(notebook: Notebook, source: str) -> None:
+    """Remove *source* from notebook: vector store, manifest, and sources list."""
+    from opennote.store.vectors import VectorStoreManager
+
+    # Remove from vector store
+    try:
+        vm = VectorStoreManager(
+            collection_name="documents",
+            store_dir=notebook.store_dir,
+            model_name=notebook.embed_model,
+        )
+        vm.delete_source(source)
+        try:
+            vm.manifest.remove(source)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    if source in notebook.sources:
+        notebook.sources.remove(source)
         notebook.save()

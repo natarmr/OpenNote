@@ -1,70 +1,63 @@
+import json
+
 import pytest
 
-from opennote.agents.session import (
+from opennote.transcript import (
     append_messages,
-    list_session_meta,
-    list_sessions,
-    load_session,
-    new_session,
-    save_session,
+    clear_transcript,
+    load_transcript,
+    save_transcript,
     trim_messages,
 )
-from opennote.chat.client import ChatError
 
 
 class StubNotebook:
     def __init__(self, directory):
         self.directory = directory
+        self.updated = ""
+        self.name = "test"
+
+    def touch_updated(self):
+        import datetime
+        self.updated = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 @pytest.fixture
 def notebook(tmp_path):
-    return StubNotebook(tmp_path / "nb")
+    d = tmp_path / "nb"
+    d.mkdir(parents=True, exist_ok=True)
+    return StubNotebook(d)
 
 
-def test_new_session_saved_and_loadable(notebook):
-    session = new_session(notebook, "groq", "openai/gpt-oss-120b")
-    loaded = load_session(notebook, session["id"])
-    assert loaded is not None
-    assert loaded["provider_id"] == "groq"
-    assert loaded["model"] == "openai/gpt-oss-120b"
-    assert loaded["messages"] == []
+def test_transcript_empty_initially(notebook):
+    assert load_transcript(notebook) == []
 
 
 def test_append_messages_persists(notebook):
-    session = new_session(notebook, "groq", "m")
-    append_messages(notebook, session["id"], [
+    append_messages(notebook, [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "hello"},
     ])
-    loaded = load_session(notebook, session["id"])
-    assert [m["role"] for m in loaded["messages"]] == ["user", "assistant"]
+    loaded = load_transcript(notebook)
+    assert [m["role"] for m in loaded] == ["user", "assistant"]
 
 
-def test_append_unknown_session_raises(notebook):
-    with pytest.raises(ChatError, match="does not exist"):
-        append_messages(notebook, "nope", [{"role": "user", "content": "x"}])
+def test_save_and_load_roundtrip(notebook):
+    save_transcript(notebook, [{"role": "user", "content": "hello"}])
+    loaded = load_transcript(notebook)
+    assert loaded[0]["content"] == "hello"
 
 
-def test_list_sessions_sorted_by_updated_desc(notebook):
-    a = new_session(notebook, "groq", "m")
-    b = new_session(notebook, "groq", "m")
-    append_messages(notebook, a["id"], [{"role": "user", "content": "newer"}])
-    sessions = list_sessions(notebook)
-    assert sessions[0]["id"] == a["id"]
-    assert {s["id"] for s in sessions} == {a["id"], b["id"]}
+def test_load_missing_returns_empty(notebook):
+    # No transcript file
+    assert load_transcript(notebook) == []
 
 
-def test_load_missing_returns_none(notebook):
-    assert load_session(notebook, "nope") is None
-
-
-def test_load_corrupt_returns_none(notebook):
-    new_session(notebook, "groq", "m")
-    (notebook.directory / "sessions").mkdir(exist_ok=True)
-    bad = notebook.directory / "sessions" / "bad.json"
-    bad.write_text("{not json", encoding="utf-8")
-    assert load_session(notebook, "bad") is None
+def test_load_corrupt_returns_empty(notebook, caplog):
+    p = notebook.directory / "transcript.json"
+    p.write_text("{not json", encoding="utf-8")
+    result = load_transcript(notebook)
+    assert result == []
 
 
 def test_trim_messages_keeps_newest_within_budget():
@@ -84,9 +77,6 @@ def test_trim_messages_never_empty():
 
 
 def test_trim_messages_never_orphans_tool():
-    # A tool exchange at the head of an oversized history: the first survivor
-    # must be a 'user' message, never a lone 'tool' or a dangling
-    # assistant-with-tool_calls (both 400 on OpenAI/Anthropic).
     messages = [
         {"role": "user", "content": "a" * 40_000},
         {"role": "assistant", "content": "", "tool_calls": [
@@ -101,7 +91,6 @@ def test_trim_messages_never_orphans_tool():
 
 
 def test_trim_messages_skips_leading_orphan_tool():
-    # Defensive: corrupt persisted state starting with a 'tool' message.
     messages = [
         {"role": "tool", "tool_call_id": "x", "content": "orphan"},
         {"role": "user", "content": "keep me"},
@@ -111,65 +100,23 @@ def test_trim_messages_skips_leading_orphan_tool():
     assert trimmed[-1]["content"] == "keep me"
 
 
-def test_save_session_atomic_no_tmp_leftover(notebook):
-    session = new_session(notebook, "groq", "m")
-    append_messages(notebook, session["id"], [{"role": "user", "content": "hi"}])
-    leftovers = [p for p in (notebook.directory / "sessions").iterdir() if p.suffix == ".tmp"]
+def test_save_atomic_no_tmp_leftover(notebook):
+    save_transcript(notebook, [{"role": "user", "content": "hi"}])
+    append_messages(notebook, [{"role": "user", "content": "again"}])
+    leftovers = [p for p in notebook.directory.iterdir() if p.suffix == ".tmp"]
     assert leftovers == []
 
 
-def test_load_corrupt_warns(notebook, caplog):
-    (notebook.directory / "sessions").mkdir(parents=True, exist_ok=True)
-    bad = notebook.directory / "sessions" / "bad.json"
-    bad.write_text("{not json", encoding="utf-8")
-    with caplog.at_level("WARNING", logger="opennote.agents.session"):
-        assert load_session(notebook, "bad") is None
-    assert any("corrupt" in r.message for r in caplog.records)
+def test_clear_transcript(notebook):
+    append_messages(notebook, [{"role": "user", "content": "hi"}])
+    clear_transcript(notebook)
+    assert load_transcript(notebook) == []
 
 
-def test_save_session_roundtrip(notebook):
-    session = new_session(notebook, "groq", "m")
-    session["model"] = "other"
-    save_session(notebook, session)
-    assert load_session(notebook, session["id"])["model"] == "other"
-
-
-def test_list_session_meta_summaries_and_sidecar(notebook):
-    # L36: listing must read lightweight sidecars, not full transcripts.
-    a = new_session(notebook, "groq", "openai/gpt-oss-120b")
-    append_messages(notebook, a["id"], [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
-    ])
-    b = new_session(notebook, "anthropic", "claude-sonnet-4-5")
-    metas = list_session_meta(notebook)
-    assert {m["id"] for m in metas} == {a["id"], b["id"]}
-    ma = next(m for m in metas if m["id"] == a["id"])
-    assert ma["model"] == "openai/gpt-oss-120b"
-    assert ma["provider_id"] == "groq"
-    assert ma["msg_count"] == 2
-    assert ma["updated"]
-    # Newest first (b was created after a was updated).
-    assert metas[0]["id"] == b["id"]
-
-
-def test_list_session_meta_missing_sidecar_falls_back_to_full(notebook):
-    # Sessions written by older versions have no sidecar; listing must still
-    # return them (falling back to full deserialization), and must not crash
-    # when the sidecar file is absent.
-    session = new_session(notebook, "groq", "m")
-    sid = session["id"]
-    meta_path = notebook.directory / "sessions" / f"{sid}.meta.json"
-    meta_path.unlink()
-    metas = list_session_meta(notebook)
-    assert [m["id"] for m in metas] == [sid]
-
-
-def test_list_session_meta_skips_corrupt_sidecar(notebook):
-    a = new_session(notebook, "groq", "m")
-    b = new_session(notebook, "groq", "m")
-    bad = notebook.directory / "sessions" / f"{a['id']}.meta.json"
-    bad.write_text("{not json", encoding="utf-8")
-    metas = list_session_meta(notebook)
-    ids = {m["id"] for m in metas}
-    assert ids == {a["id"], b["id"]}
+def test_append_trims(notebook):
+    # Large history should be trimmed on append
+    big = [{"role": "user", "content": "x" * 50_000} for _ in range(5)]
+    save_transcript(notebook, big)
+    append_messages(notebook, [{"role": "user", "content": "keep me"}])
+    loaded = load_transcript(notebook)
+    assert loaded[-1]["content"] == "keep me"

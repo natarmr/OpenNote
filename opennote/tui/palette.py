@@ -27,30 +27,30 @@ def make_palette(screen) -> List[PaletteEntry]:
     is rendered by ``CommandPalette`` as a dim separator.
     """
     return [
-        # ---- Session ----
+        # ---- Notebook (session == notebook) ----
         PaletteEntry(
-            title="New Session",
-            description="Start a fresh conversation",
-            section="Session",
-            action=lambda: screen._new_session(),
+            title="Notebooks",
+            description="Open / new / delete / rename notebooks",
+            section="Notebook",
+            submenu=lambda: screen._show_notebook_picker(),
         ),
         PaletteEntry(
-            title="Switch Session",
-            description="Pick from saved sessions (id, model, msgs, updated)",
-            section="Session",
-            submenu=lambda: screen._open_sessions_dialog(),
-        ),
-        PaletteEntry(
-            title="Export Session",
+            title="Export Notebook",
             description="Save this conversation as Markdown",
-            section="Session",
-            action=lambda: screen._export_session(),
+            section="Notebook",
+            action=lambda: screen._export_transcript(),
         ),
         PaletteEntry(
             title="Undo Last Turn",
             description="Remove the last question and answer",
-            section="Session",
+            section="Notebook",
             action=lambda: screen._undo_last_turn(),
+        ),
+        PaletteEntry(
+            title="Remove Source",
+            description="Remove an indexed source (frees a slot)",
+            section="Notebook",
+            submenu=lambda: screen._remove_source(),
         ),
         # ---- Mode ----
         PaletteEntry(

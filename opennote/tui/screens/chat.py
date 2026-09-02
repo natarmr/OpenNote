@@ -1,8 +1,8 @@
 """Main chat screen: banner + transcript + prompt bar.
 
-Owns the notebook/session state, runs agent turns and searches in worker
-threads, and translates slash commands through the command registry.
+Notebook == session. No separate session layer.
 """
+
 from __future__ import annotations
 
 import logging
@@ -17,19 +17,13 @@ from textual.message import Message
 from textual.screen import Screen
 
 from opennote.agents.loop import TurnCancelled, agent_turn
-from opennote.agents.session import (
-    append_messages,
-    list_sessions,
-    load_session,
-    new_session,
-    save_session,
-)
 from opennote.chat.ask import AskResult
 from opennote.chat.client import ChatError, default_provider, get_client
-from opennote.notebooks import Notebook, NotebookManager
+from opennote.notebooks import Notebook, NotebookManager, current_project
 from opennote.retrieval.retriever import Retriever, render_results
+from opennote.transcript import append_messages, load_transcript, clear_transcript, save_transcript
 from opennote.tui.commands import lookup, make_commands
-from opennote.tui.dialogs import HelpDialog, InfoDialog, ask_input, item_list
+from opennote.tui.dialogs import HelpDialog, InfoDialog, ask_input, item_list, confirm_dialog
 from opennote.tui.theme import DEFAULT, LIGHT, Palette
 from opennote.tui.widgets.prompt import MODE_LABELS, MODES, PromptBar, PromptInput
 from opennote.tui.widgets.transcript import Transcript
@@ -38,8 +32,6 @@ logger = logging.getLogger("opennote.tui.chat")
 
 
 class TurnResult(Message):
-    """A completed agent turn (worker thread -> UI)."""
-
     def __init__(self, question: str, answer: str, provider_id: str, model: str) -> None:
         super().__init__()
         self.question = question
@@ -105,8 +97,6 @@ class StudioFailed(Message):
 
 
 class ChatScreen(Screen):
-    """The single full-screen chat view (banner, transcript, prompt)."""
-
     BINDINGS = [
         Binding("ctrl+c,ctrl+q", "quit", "Quit", priority=True),
         Binding("escape", "interrupt", "Interrupt", priority=True),
@@ -116,7 +106,7 @@ class ChatScreen(Screen):
 
     def __init__(
         self,
-        notebook_name: str = "default",
+        notebook_name: Optional[str] = None,
         palette: Optional[Palette] = None,
         manager: Optional[NotebookManager] = None,
         provider_id: Optional[str] = None,
@@ -127,6 +117,7 @@ class ChatScreen(Screen):
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        # None means bare launch: auto-open new notebook via prompt
         self.notebook_name = notebook_name
         self.palette = palette or DEFAULT
         self._manager = manager or NotebookManager()
@@ -136,10 +127,7 @@ class ChatScreen(Screen):
         self._ingest_fn = ingest_fn
         self._cancel_flag = False
         self.mode = "ask"
-
-        # Resolve notebook + session eagerly so the screen is deterministic.
         self.notebook: Optional[Notebook] = None
-        self.session: Optional[Dict] = None
 
     # -- composition -------------------------------------------------------
 
@@ -160,15 +148,23 @@ class ChatScreen(Screen):
         self.transcript.palette = self.palette
         self.commands = make_commands(self)
         self.prompt.set_commands(self.commands)
-        self._resolve_notebook()
         self._resolve_provider()
-        self._resolve_session()
+        # Notebook resolution: explicit name -> direct open, None -> startup flow (auto new)
+        if self.notebook_name:
+            self._resolve_notebook_direct(self.notebook_name)
+            self._finish_mount()
+        else:
+            self._startup_auto_new()
+
+    def _finish_mount(self) -> None:
         self.transcript.add_banner(self.palette)
-        if self.session and self.session.get("messages"):
+        msgs = load_transcript(self.notebook) if self.notebook else []
+        if msgs:
             self._reveal_transcript()
-            self._render_history()
+            self._render_history(msgs)
         self.prompt.set_mode(self.mode)
         self.prompt.focus_input()
+        self._sync_meta()
 
     def _enter_studio(self, _arg: str = "") -> None:
         self.mode = "studio"
@@ -179,30 +175,58 @@ class ChatScreen(Screen):
         self._open_studio_menu()
 
     # -- setup -------------------------------------------------------------
-    def _resolve_notebook(self) -> None:
-        # Fresh directory -> fresh notebook: derive name from cwd when default
-        if self.notebook_name == "default":
-            try:
-                from pathlib import Path as _P
-                from opennote.notebooks import validate_notebook_name as _v
 
-                cand = _P.cwd().name.strip()
-                if cand:
-                    try:
-                        _v(cand)
-                        self.notebook_name = cand
-                    except ValueError:
-                        pass
-            except Exception:
-                pass
+    def _startup_auto_new(self) -> None:
+        """Auto-open a new notebook: prompt prefilled with next free name."""
+        suggested = self._manager.next_notebook_name(current_project())
+        self._startup_suggested = suggested
+        ask_input(
+            self.app,
+            "New Notebook",
+            "Name for the new notebook:",
+            placeholder=suggested,
+            on_submit=self._on_startup_name,
+        )
+
+    def _on_startup_name(self, name: Optional[str]) -> None:
+        if name is None:
+            # Esc -> show picker (open existing / delete / rename)
+            self.transcript.add_banner(self.palette)
+            self.prompt.set_mode(self.mode)
+            self.prompt.focus_input()
+            self._sync_meta()
+            self._show_notebook_picker()
+            return
+        name = name.strip() or getattr(self, "_startup_suggested", "") or self._manager.next_notebook_name(current_project())
+        self._create_and_open_notebook(name)
+
+    def _resolve_notebook_direct(self, name: str) -> None:
         try:
-            self.notebook = self._manager.get(self.notebook_name)
+            self.notebook = self._manager.get(name)
         except (KeyError, ValueError):
             try:
-                self.notebook = self._manager.create(self.notebook_name)
+                self.notebook = self._manager.create(name, project=current_project())
             except (FileExistsError, ValueError) as e:
                 self.transcript.add_error(f"Cannot create notebook: {e}")
                 self.notebook = None
+        if self.notebook:
+            self.notebook_name = self.notebook.name
+
+    def _create_and_open_notebook(self, name: str) -> None:
+        name = name.strip() if name else ""
+        if not name:
+            name = self._manager.next_notebook_name(current_project())
+        try:
+            nb = self._manager.create(name, project=current_project())
+        except (FileExistsError, ValueError) as e:
+            self.transcript.add_error(f"Cannot create notebook: {e}")
+            # Fall back to finishing mount with no notebook or show picker
+            self.notebook = None
+            self._finish_mount()
+            return
+        self.notebook = nb
+        self.notebook_name = nb.name
+        self._finish_mount()
 
     def _resolve_provider(self) -> None:
         if self._client is not None:
@@ -218,28 +242,34 @@ class ChatScreen(Screen):
         except (ChatError, ValueError) as e:
             self.transcript.add_error(str(e))
 
-    def _resolve_session(self) -> None:
-        if self.notebook is None:
-            return
-        # Surgical: bare `opennote` always starts fresh session (no auto-resume)
-        pid = self._client.provider_id if self._client else ""
-        model = self._client.model if self._client else ""
-        self.session = new_session(self.notebook, pid, model)
-        self._sync_meta()
-
     def _sync_meta(self) -> None:
-        pid = self._client.provider_id if self._client else (self.session or {}).get("provider_id", "")
-        model = self._client.model if self._client else (self.session or {}).get("model", "")
+        # Persist provider choice into notebook + update prompt
+        if self.notebook is not None and self._client is not None:
+            self.notebook.provider_id = self._client.provider_id
+            self.notebook.model = self._client.model
+            try:
+                self.notebook.save()
+            except Exception:
+                pass
+        pid = ""
+        model = ""
+        if self._client:
+            pid = self._client.provider_id
+            model = self._client.model
+        elif self.notebook:
+            pid = self.notebook.provider_id
+            model = self.notebook.model
         if not pid:
             pid = "no provider"
         self.prompt.set_model(model, pid)
 
     # -- history rendering -------------------------------------------------
 
-    def _render_history(self) -> None:
-        if not self.session:
+    def _render_history(self, messages: Optional[List[Dict]] = None) -> None:
+        if self.notebook is None:
             return
-        for msg in self.session.get("messages", []):
+        msgs = messages if messages is not None else load_transcript(self.notebook)
+        for msg in msgs:
             role = msg.get("role")
             content = msg.get("content")
             if not isinstance(content, str):
@@ -295,8 +325,7 @@ class ChatScreen(Screen):
     @work(thread=True, exclusive=True, group="turn")
     async def _run_ask(self, question: str) -> None:
         notebook = self.notebook
-        session_id = (self.session or {}).get("id", "")
-        history = list((self.session or {}).get("messages", [])) if self.session else []
+        history = load_transcript(notebook) if notebook else []
         provider_id = self._client.provider_id if self._client else None
         try:
             agent = agent_turn(
@@ -318,9 +347,9 @@ class ChatScreen(Screen):
             logger.exception("Agent turn failed")
             self.app.call_from_thread(self.post_message, TurnFailed(str(e)))
             return
-        if self.session is not None:
+        if notebook is not None:
             try:
-                self.session = append_messages(notebook, session_id, agent.messages)
+                append_messages(notebook, agent.messages)
             except Exception as e:
                 self.app.call_from_thread(self.post_message, TurnFailed(str(e)))
                 return
@@ -354,7 +383,7 @@ class ChatScreen(Screen):
             return
         self.app.call_from_thread(self.post_message, SearchResultMsg(question, text))
 
-    # -- studio: artifact generators (L66/L80/L82) ---------------------------
+    # -- studio: artifact generators ---------------------------
 
     STUDIO_GENERATORS = [
         ("mindmap", "Mind map", "create_mindmap"),
@@ -366,8 +395,6 @@ class ChatScreen(Screen):
     ]
 
     def _start_studio(self, text: str) -> None:
-        """Run a studio generator. *text* is the topic/question; the generator
-        kind comes from the submenu (or a direct slash command)."""
         if self.notebook is None:
             self.transcript.add_error("Notebook is not available.")
             return
@@ -411,8 +438,6 @@ class ChatScreen(Screen):
         self._run_studio(key, topic)
 
     def _start_studio_command(self, kind: str) -> Callable[[str], None]:
-        """Build a slash-command handler that runs generator *kind* directly."""
-
         def handler(arg: str) -> None:
             topic = arg.strip()
             if not topic:
@@ -424,7 +449,6 @@ class ChatScreen(Screen):
         return handler
 
     def _start_studio_palette(self, kind: str) -> None:
-        """Palette helper: ask for a topic, then run generator *kind* directly."""
         ask_input(
             self.app,
             "Studio",
@@ -484,10 +508,6 @@ class ChatScreen(Screen):
         self.app.call_from_thread(self.post_message, StudioResultMsg("video", detail))
 
     def _generate_studio_artifact(self, kind: str, topic: str, notebook: Notebook) -> str:
-        """Run one studio generator with retrieved context and save the artifact.
-
-        Delegates prompt rendering to ``opennote.artifacts`` templates (single owner).
-        """
         from opennote.artifacts import (
             create_mindmap,
             generate_briefing,
@@ -499,7 +519,6 @@ class ChatScreen(Screen):
         )
         from opennote.retrieval.retriever import Retriever
 
-        # F2 fix: Retriever construction inside try so empty-notebook shows friendly error
         try:
             retriever = self._retriever or Retriever(notebook, top_k=8)
             results = retriever.search(topic)
@@ -507,7 +526,6 @@ class ChatScreen(Screen):
             self.transcript.add_error("No sources indexed yet. Run /ingest first.")
             return ""
 
-        # Build grounded context with [n] citations and full content for LLM prompts
         context_parts: List[str] = []
         for i, r in enumerate(results, start=1):
             fn = r.metadata.get("filename", "unknown")
@@ -516,7 +534,6 @@ class ChatScreen(Screen):
             context_parts.append(f"{citation}: {chunk}")
         context_text = "\n".join(context_parts) if context_parts else "No context available."
 
-        # Kind -> template rendering (single owner: artifacts.py)
         prompts = {
             "study": generate_study_guide(topic, context_text),
             "faq": generate_faq(context_text),
@@ -525,10 +542,8 @@ class ChatScreen(Screen):
             "suggest": generate_suggested_questions(topic, context_text),
         }
         if kind == "mindmap":
-            # Mindmap uses hierarchical outline; build via artifacts helper when possible
             items = [f"{r.metadata.get('filename','unknown')}: {r.content[:60]}" for r in results[:8]]
             if self._client is None:
-                # LLM-free mindmap fallback via artifacts helper
                 art = create_mindmap(topic, items, notebook.directory)
                 return str(art.path)
             prompt = "# " + topic + "\n" + "\n".join(f"[{i+1}] {it}" for i, it in enumerate(items))
@@ -545,7 +560,6 @@ class ChatScreen(Screen):
             art = save_artifact(kind=kind, title=topic, body=answer, notebook_dir=notebook.directory)
             return str(art.path)
 
-        # LLM-free fallback: consolidated digest table (deduplicated)
         fallback_templates = {
             "study": f"Study guide for **{topic}** based on {len(results)} chunks.\n" + "\n".join(
                 f"• {r.metadata.get('filename','unknown')}: {r.content[:80]}" for r in results[:5]),
@@ -637,57 +651,10 @@ class ChatScreen(Screen):
         )
 
     def _clear_transcript(self, _arg: str = "") -> None:
+        if self.notebook is not None:
+            clear_transcript(self.notebook)
         self.transcript.clear()
         self.transcript.add_banner(self.palette)
-
-    def _open_sessions_dialog(self, _arg: str = "") -> None:
-        if self.notebook is None:
-            return
-        sessions = list_sessions(self.notebook)
-        if not sessions:
-            self.transcript.add_info("No saved sessions.")
-            return
-        items = [
-            (
-                s["id"],
-                f"{'*' if self.session and s['id'] == self.session.get('id') else ' '} "
-                f"{s['id'][:8]}… model={s.get('model')} "
-                f"msgs={len(s.get('messages', []))} updated={s.get('updated', '')[:19]}",
-            )
-            for s in sessions
-        ]
-        item_list(self.app, "Sessions", items, on_pick=self._on_session_picked)
-
-    def _on_session_picked(self, session_id: Optional[str]) -> None:
-        if session_id and self.notebook is not None:
-            self._resume_session(session_id)
-
-    def _resume_session(self, session_id: str) -> None:
-        session_id = session_id.strip()
-        if not session_id:
-            self.transcript.add_info("Usage: /resume <session-id> (or /sessions)")
-            return
-        if self.notebook is None:
-            return
-        loaded = load_session(self.notebook, session_id)
-        if loaded is None:
-            self.transcript.add_error(f"No session with id '{session_id}'.")
-            return
-        self.session = loaded
-        self.transcript.clear()
-        self.transcript.add_banner(self.palette)
-        self._render_history()
-        self._sync_meta()
-        self.transcript.add_info(f"Resumed session {session_id[:8]}…")
-
-    def _resume_last(self, _arg: str = "") -> None:
-        if self.notebook is None:
-            return
-        sessions = list_sessions(self.notebook)
-        if not sessions:
-            self.transcript.add_info("No saved sessions.")
-            return
-        self._resume_session(sessions[0]["id"])
 
     def _switch_provider(self, arg: str = "") -> None:
         arg = arg.strip()
@@ -699,7 +666,6 @@ class ChatScreen(Screen):
         except (ChatError, ValueError) as e:
             self.transcript.add_error(str(e))
             return
-        self._persist_provider_choice()
         self._sync_meta()
         self.transcript.add_info(
             f"Provider switched to {self._client.provider_id} ({self._client.model})."
@@ -727,27 +693,22 @@ class ChatScreen(Screen):
         if pid:
             self._switch_provider(pid)
 
-    def _persist_provider_choice(self) -> None:
-        if self.session is not None:
-            self.session["provider_id"] = self._client.provider_id
-            self.session["model"] = self._client.model
-            if self.notebook is not None:
-                save_session(self.notebook, self.session)
-
-    def _export_session(self, _arg: str = "") -> None:
-        if self.notebook is None or self.session is None:
+    def _export_transcript(self, _arg: str = "") -> None:
+        if self.notebook is None:
             self.transcript.add_info("Nothing to export.")
             return
-        session = self.session
+        msgs = load_transcript(self.notebook)
+        if not msgs:
+            self.transcript.add_info("Nothing to export.")
+            return
         out_dir = self.notebook.directory / "exports"
         out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"session-{session['id']}.md"
+        path = out_dir / f"notebook-{self.notebook.name}.md"
         lines = [
-            f"# Session {session['id'][:8]}",
-            f"\n- provider: {session.get('provider_id', '')} · {session.get('model', '')}",
-            f"- updated: {session.get('updated', '')}\n",
+            f"# Notebook {self.notebook.name}",
+            f"\n- updated: {self.notebook.updated}\n",
         ]
-        for msg in session.get("messages", []):
+        for msg in msgs:
             role = msg.get("role")
             content = msg.get("content")
             if not isinstance(content, str):
@@ -761,18 +722,18 @@ class ChatScreen(Screen):
         except OSError as e:
             self.transcript.add_error(f"Export failed: {e}")
             return
-        self.transcript.add_info(f"Exported {len(session.get('messages', []))} messages to {path}")
+        self.transcript.add_info(f"Exported {len(msgs)} messages to {path}")
 
-    # -- U4: undo / details -------------------------------------------------
+    # -- undo / details -------------------------------------------------
 
     def _undo_last_turn(self, _arg: str = "") -> None:
         if self.prompt.busy:
             self.transcript.add_error("Busy.")
             return
-        if self.notebook is None or self.session is None:
+        if self.notebook is None:
             self.transcript.add_info("Nothing to undo.")
             return
-        messages = self.session.get("messages", [])
+        messages = load_transcript(self.notebook)
         last_user = -1
         for i in range(len(messages) - 1, -1, -1):
             if messages[i].get("role") == "user":
@@ -782,8 +743,7 @@ class ChatScreen(Screen):
             self.transcript.add_info("Nothing to undo.")
             return
         dropped = len(messages) - last_user
-        self.session["messages"] = messages[:last_user]
-        save_session(self.notebook, self.session)
+        save_transcript(self.notebook, messages[:last_user])
         self.transcript.clear()
         self.transcript.add_banner(self.palette)
         self._render_history()
@@ -791,22 +751,18 @@ class ChatScreen(Screen):
         self.transcript.add_info(f"Undid the last turn ({dropped} message(s) removed).")
 
     def _show_details(self, _arg: str = "") -> None:
-        lines = ["Session:"]
-        if self.session:
-            s = self.session
-            lines.append(f"  id:      {s.get('id', '')}")
-            lines.append(f"  created: {s.get('created', '')[:19]}")
-            lines.append(f"  updated: {s.get('updated', '')[:19]}")
-            lines.append(f"  provider:{s.get('provider_id', '')} · {s.get('model', '')}")
-            lines.append(f"  messages:{len(s.get('messages', []))}")
-        else:
-            lines.append("  (no session)")
-        lines.append("Notebook:")
+        lines = ["Notebook:"]
         if self.notebook:
             lines.append(f"  name:      {self.notebook.name}")
             lines.append(f"  directory: {self.notebook.directory}")
             lines.append(f"  embed:     {self.notebook.embed_model}")
-            lines.append(f"  sources:   {len(self.notebook.sources)}")
+            lines.append(f"  project:   {self.notebook.project}")
+            lines.append(f"  sources:   {len(self.notebook.sources)}/{5}")
+            for s in self.notebook.sources:
+                lines.append(f"    - {s}")
+            msgs = load_transcript(self.notebook)
+            lines.append(f"  messages:  {len(msgs)}")
+            lines.append(f"  updated:   {self.notebook.updated[:19] if self.notebook.updated else ''}")
         else:
             lines.append("  (no notebook)")
         lines.append("Client:")
@@ -842,16 +798,6 @@ class ChatScreen(Screen):
         self.palette = self.app.palette
         self.transcript.add_banner(self.app.palette)
 
-    def _new_session(self, _arg: str = "") -> None:
-        if self.notebook is None:
-            return
-        pid = self._client.provider_id if self._client else ""
-        model = self._client.model if self._client else ""
-        self.session = new_session(self.notebook, pid, model)
-        self.transcript.clear()
-        self.transcript.add_banner(self.palette)
-        self.prompt.set_idle()
-
     def _list_sources(self, _arg: str = "") -> None:
         if self.notebook is None:
             return
@@ -867,9 +813,49 @@ class ChatScreen(Screen):
         for src in sources:
             self.transcript.add_info(f"  {src}")
 
+    def _remove_source(self, arg: str = "") -> None:
+        if self.notebook is None:
+            self.transcript.add_error("Notebook is not available.")
+            return
+        arg = arg.strip()
+        if not arg:
+            # Pick from list
+            sources = self.notebook.sources
+            if not sources:
+                self.transcript.add_info("No sources to remove.")
+                return
+            items = [(s, s) for s in sources]
+            item_list(self.app, "Remove source", items, on_pick=self._on_remove_picked)
+            return
+        # Try exact or substring match
+        matches = [s for s in self.notebook.sources if arg in s]
+        if not matches:
+            self.transcript.add_error(f"No source matching '{arg}'.")
+            return
+        if len(matches) > 1:
+            items = [(s, s) for s in matches]
+            item_list(self.app, "Remove source (multiple matches)", items, on_pick=self._on_remove_picked)
+            return
+        self._do_remove_source(matches[0])
+
+    def _on_remove_picked(self, source: Optional[str]) -> None:
+        if source:
+            self._do_remove_source(source)
+
+    def _do_remove_source(self, source: str) -> None:
+        def on_confirm(confirmed: Optional[bool]) -> None:
+            if not confirmed:
+                return
+            try:
+                from opennote.ingest.pipeline import remove_source
+                remove_source(self.notebook, source)
+                self.transcript.add_info(f"Removed source: {source}")
+            except Exception as e:
+                self.transcript.add_error(f"Remove failed: {e}")
+
+        confirm_dialog(self.app, f"Remove source?\n{source}", on_confirm)
+
     def _open_artifact(self, arg: str = "") -> None:
-        """Open an artifact file (or the notebook's artifacts dir) with the
-        system default application."""
         if self.notebook is None:
             self.transcript.add_error("Notebook is not available.")
             return
@@ -877,7 +863,6 @@ class ChatScreen(Screen):
         target = artifacts_dir
         arg = arg.strip()
         if arg:
-            # Only allow paths inside the notebook's artifacts dir (L59-style guard).
             candidate = (artifacts_dir / arg).resolve()
             try:
                 candidate.relative_to(artifacts_dir.resolve())
@@ -904,25 +889,43 @@ class ChatScreen(Screen):
             return
         self.transcript.add_info(f"Opened {target}")
 
-    # -- U3: notebooks -----------------------------------------------------
+    # -- notebooks: 4-action picker ---------------------------------------
 
-    def _open_notebooks_dialog(self, _arg: str = "") -> None:
+    def _show_notebook_picker(self, _arg: str = "") -> None:
+        """Top-level notebook menu: open / new / delete / rename."""
         if self.prompt.busy:
             self.transcript.add_error("Busy.")
             return
-        notebooks = self._manager.list()
+        items = [
+            ("open", "Open existing notebook"),
+            ("new", "New notebook"),
+            ("delete", "Delete notebook"),
+            ("rename", "Rename notebook"),
+        ]
+        item_list(self.app, "Notebooks", items, on_pick=self._on_notebook_action)
+
+    def _on_notebook_action(self, action: Optional[str]) -> None:
+        if not action:
+            return
+        if action == "open":
+            self._open_notebook_dialog()
+        elif action == "new":
+            self._create_notebook_dialog()
+        elif action == "delete":
+            self._delete_notebook_dialog()
+        elif action == "rename":
+            self._rename_notebook_dialog()
+
+    def _open_notebook_dialog(self) -> None:
+        notebooks = self._manager.list_for_project(current_project())
         if not notebooks:
-            self.transcript.add_info("No notebooks yet. Use /create <name>.")
+            self.transcript.add_info("No notebooks for this directory. Use 'New notebook'.")
             return
         items = [
-            (
-                nb.name,
-                f"{'*' if self.notebook and nb.name == self.notebook.name else ' '} "
-                f"{nb.name} · {len(nb.sources)} sources",
-            )
+            (nb.name, f"{'*' if self.notebook and nb.name == self.notebook.name else ' '} {nb.name} · {len(nb.sources)}/5 sources · {len(load_transcript(nb))} msgs")
             for nb in notebooks
         ]
-        item_list(self.app, "Notebooks", items, on_pick=self._on_notebook_picked)
+        item_list(self.app, "Open notebook", items, on_pick=self._on_notebook_picked)
 
     def _on_notebook_picked(self, name: Optional[str]) -> None:
         if name:
@@ -946,10 +949,13 @@ class ChatScreen(Screen):
             return False
         self.notebook_name = notebook.name
         self.notebook = notebook
-        self._resolve_session()
         self.transcript.clear()
         self.transcript.add_banner(self.palette)
-        self._render_history()
+        msgs = load_transcript(notebook)
+        if msgs:
+            self._reveal_transcript()
+            self._render_history(msgs)
+        self._sync_meta()
         self.transcript.add_info(f"Notebook: {notebook.name}")
         return True
 
@@ -962,33 +968,104 @@ class ChatScreen(Screen):
             self.transcript.add_error("Busy.")
             return
         try:
-            notebook = self._manager.create(name)
+            notebook = self._manager.create(name, project=current_project())
         except (FileExistsError, ValueError) as e:
             self.transcript.add_error(str(e))
             return
         self.notebook_name = notebook.name
         self.notebook = notebook
-        self._resolve_session()
         self.transcript.clear()
         self.transcript.add_banner(self.palette)
+        self._sync_meta()
         self.transcript.add_info(f"Created notebook: {notebook.name}")
         return
 
     def _create_notebook_dialog(self) -> None:
-        """Palette helper: ask for a notebook name, then create it."""
+        suggested = self._manager.next_notebook_name(current_project())
         ask_input(
             self.app,
             "New Notebook",
             "Name for the new notebook:",
-            placeholder="my-notebook",
+            placeholder=suggested,
             on_submit=self._on_create_notebook_dialog,
         )
+        self._create_suggested = suggested
 
     def _on_create_notebook_dialog(self, name: Optional[str]) -> None:
-        if name:
-            self._create_notebook(name)
+        if name is None:
+            return
+        name = name.strip() or getattr(self, "_create_suggested", "")
+        if not name:
+            return
+        self._create_notebook(name)
 
-    # -- U3: ingest --------------------------------------------------------
+    def _delete_notebook_dialog(self) -> None:
+        notebooks = self._manager.list_for_project(current_project())
+        if not notebooks:
+            self.transcript.add_info("No notebooks to delete.")
+            return
+        items = [(nb.name, f"{nb.name} · {len(nb.sources)}/5 sources") for nb in notebooks]
+        item_list(self.app, "Delete notebook", items, on_pick=self._on_delete_picked)
+
+    def _on_delete_picked(self, name: Optional[str]) -> None:
+        if not name:
+            return
+        def on_confirm(confirmed: Optional[bool]) -> None:
+            if not confirmed:
+                return
+            try:
+                self._manager.delete(name)
+                self.transcript.add_info(f"Deleted notebook '{name}'.")
+                if self.notebook and self.notebook.name == name:
+                    # Switch to next available or clear
+                    remaining = self._manager.list_for_project(current_project())
+                    if remaining:
+                        self._switch_notebook(remaining[0].name)
+                    else:
+                        self.notebook = None
+                        self.transcript.clear()
+                        self.transcript.add_banner(self.palette)
+            except Exception as e:
+                self.transcript.add_error(str(e))
+        confirm_dialog(self.app, f"Delete notebook '{name}'? This cannot be undone.", on_confirm)
+
+    def _rename_notebook_dialog(self) -> None:
+        notebooks = self._manager.list_for_project(current_project())
+        if not notebooks:
+            self.transcript.add_info("No notebooks to rename.")
+            return
+        items = [(nb.name, nb.name) for nb in notebooks]
+        item_list(self.app, "Rename notebook", items, on_pick=self._on_rename_pick)
+
+    def _on_rename_pick(self, name: Optional[str]) -> None:
+        if not name:
+            return
+        self._rename_old = name
+        ask_input(
+            self.app,
+            "Rename Notebook",
+            f"New name for '{name}':",
+            placeholder=name,
+            on_submit=self._on_rename_submit,
+        )
+
+    def _on_rename_submit(self, new_name: Optional[str]) -> None:
+        if not new_name:
+            return
+        old = getattr(self, "_rename_old", "")
+        new_name = new_name.strip()
+        if not new_name:
+            return
+        try:
+            nb = self._manager.rename(old, new_name)
+            self.transcript.add_info(f"Renamed '{old}' to '{new_name}'.")
+            if self.notebook and self.notebook.name == old:
+                self.notebook = nb
+                self.notebook_name = nb.name
+        except Exception as e:
+            self.transcript.add_error(str(e))
+
+    # -- ingest --------------------------------------------------------
 
     def _start_ingest(self, arg: str = "") -> None:
         arg = arg.strip()
@@ -1030,7 +1107,7 @@ class ChatScreen(Screen):
         self.transcript.add_error(f"Ingest failed: {msg.error}")
         self.prompt.set_idle()
 
-    # -- U3: auth / connect -------------------------------------------------
+    # -- auth / connect -------------------------------------------------
 
     def _show_auth(self, _arg: str = "") -> None:
         from opennote.auth.config import AuthConfig
@@ -1169,12 +1246,10 @@ class ChatScreen(Screen):
             self.transcript.add_error(str(e))
             return
         self._client = client
-        self._persist_provider_choice()
         self._sync_meta()
         self.transcript.add_info(f"Connected {pid} ({client.model}).")
 
     def _open_model_dialog(self, _arg: str = "") -> None:
-        """Pick a model for the current provider (live catalog when reachable)."""
         if self._client is None:
             self.transcript.add_error("No provider configured. Run /connect first.")
             return
@@ -1231,16 +1306,13 @@ class ChatScreen(Screen):
         except (ChatError, ValueError) as e:
             self.transcript.add_error(str(e))
             return
-        self._persist_provider_choice()
         self._sync_meta()
         self.transcript.add_info(f"Model switched to {model}.")
 
     def action_open_palette(self) -> None:
-        """Open the Ctrl+P command palette."""
         from opennote.tui.dialogs import CommandPalette
 
         self.app.push_screen(CommandPalette(self, on_done=self._on_palette_done))
 
     def _on_palette_done(self, value: Optional[str]) -> None:
-        """Called when the palette is dismissed."""
         pass

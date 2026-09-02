@@ -202,7 +202,7 @@ class OpenNoteApp(App):
 
     def __init__(
         self,
-        notebook_name: str = "default",
+        notebook_name: Optional[str] = None,
         palette: Optional[Palette] = None,
         manager=None,
         provider_id: Optional[str] = None,
@@ -244,7 +244,7 @@ class OpenNoteApp(App):
         )
 
 
-def main(notebook: str = "default", light: bool = False) -> None:
+def main(notebook: Optional[str] = None, light: bool = False) -> None:
     """Launch the TUI (console-script entry point for bare ``opennote``)."""
     from opennote.tui.theme import LIGHT
 

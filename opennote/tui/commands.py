@@ -1,9 +1,5 @@
-"""Slash-command registry for the TUI.
+"""Slash-command registry for the TUI."""
 
-Each command maps a set of names to a handler that receives the chat screen and
-the rest of the input line. The registry powers the autocomplete popup, the
-ctrl+p command palette, and ``/help`` in one place.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,17 +8,12 @@ from typing import Callable, List, Optional
 
 @dataclass
 class Command:
-    """A slash command the user can invoke from the prompt.
-
-    ``handler`` is a bound method taking the argument string: ``handler(arg)``.
-    """
-
     name: str
     description: str
     handler: Callable[[str], None]
     aliases: tuple = ()
     arg_hint: str = ""
-    category: str = "General"  # used for palette segregation
+    category: str = "General"
 
     @property
     def names(self) -> tuple:
@@ -38,24 +29,17 @@ class Command:
 
 
 def make_commands(screen) -> List[Command]:
-    """Build the registry bound to a specific chat screen.
-
-    Handlers delegate to screen methods so the registry stays declarative.
-    """
     return [
-        Command("help", "Show command help", screen._show_help, category="Session"),
-        Command("exit", "Quit the TUI", lambda a: screen.app.exit(), aliases=("quit", "q"), category="Session"),
-        Command("new", "Start a fresh session", screen._new_session, category="Session"),
-        Command("clear", "Clear the transcript", screen._clear_transcript, category="Session"),
-        Command("sessions", "List sessions and resume one", screen._open_sessions_dialog, category="Session"),
-        Command("resume", "Resume the most recent session", screen._resume_last, arg_hint="<id>", category="Session"),
-        Command("continue", "Continue the most recent session", screen._resume_last, category="Session"),
+        Command("help", "Show command help", screen._show_help, category="Notebook"),
+        Command("exit", "Quit the TUI", lambda a: screen.app.exit(), aliases=("quit", "q"), category="Notebook"),
+        Command("clear", "Clear the transcript", screen._clear_transcript, category="Notebook"),
         Command("model", "Switch LLM provider", screen._switch_provider, arg_hint="<provider>", category="Provider"),
         Command("sources", "List indexed sources", screen._list_sources, category="Notebook"),
-        Command("export", "Export the session to markdown", screen._export_session, category="Session"),
-        Command("undo", "Undo the last turn", screen._undo_last_turn, category="Session"),
-        Command("details", "Show session/notebook details", screen._show_details, category="Session"),
-        Command("notebooks", "List notebooks and switch", screen._open_notebooks_dialog, category="Notebook"),
+        Command("remove", "Remove a source", screen._remove_source, arg_hint="[source]", category="Notebook"),
+        Command("export", "Export the notebook transcript to markdown", screen._export_transcript, category="Notebook"),
+        Command("undo", "Undo the last turn", screen._undo_last_turn, category="Notebook"),
+        Command("details", "Show notebook details", screen._show_details, category="Notebook"),
+        Command("notebooks", "Open / new / delete / rename notebooks", screen._show_notebook_picker, category="Notebook"),
         Command("notebook", "Switch to a notebook", screen._switch_notebook, arg_hint="<name>", category="Notebook"),
         Command("create", "Create a notebook and open it", screen._create_notebook, arg_hint="<name>", category="Notebook"),
         Command("ingest", "Index a file, folder, or URL", screen._start_ingest, arg_hint="<path|url>", category="Notebook"),
@@ -79,7 +63,6 @@ def make_commands(screen) -> List[Command]:
 
 
 def lookup(name: str, commands: List[Command]) -> Optional[Command]:
-    """Find a command by name (with or without leading slash)."""
     stripped = name.lstrip("/").lower()
     for cmd in commands:
         if cmd.matches(stripped):
@@ -88,13 +71,11 @@ def lookup(name: str, commands: List[Command]) -> Optional[Command]:
 
 
 def matches_prefix(prefix: str, commands: List[Command]) -> List[Command]:
-    """Commands whose name starts with *prefix* (after a leading slash)."""
     stripped = prefix.lstrip("/").lower()
     return [cmd for cmd in commands if cmd.name.startswith(stripped)]
 
 
 def help_text(commands: List[Command]) -> str:
-    """Render the command list for ``/help`` and the palette, grouped by category."""
     categories: dict = {}
     for cmd in sorted(commands, key=lambda c: c.name):
         cat = cmd.category

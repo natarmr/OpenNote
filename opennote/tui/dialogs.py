@@ -169,6 +169,36 @@ def ask_input(
     app.push_screen(dialog, callback=on_submit)
 
 
+class ConfirmDialog(ModalScreen):
+    """Yes/No confirmation dialog."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss_no", "No", show=False),
+        Binding("enter", "dismiss_yes", "Yes", show=False),
+    ]
+
+    def __init__(self, message: str, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog", classes="dialog"):
+            yield Label("Confirm", id="dialog-title")
+            yield Static(self._message, id="dialog-body")
+            yield Label("enter yes · esc no", id="dialog-hint", classes="muted")
+
+    def action_dismiss_yes(self) -> None:
+        self.dismiss(True)
+
+    def action_dismiss_no(self) -> None:
+        self.dismiss(False)
+
+
+def confirm_dialog(app, message: str, on_confirm: Optional[Callable[[Optional[bool]], None]] = None) -> None:
+    dialog = ConfirmDialog(message)
+    app.push_screen(dialog, callback=on_confirm)
+
+
 # --------------------------------------------------------------------------- #
 # Command palette
 # --------------------------------------------------------------------------- #

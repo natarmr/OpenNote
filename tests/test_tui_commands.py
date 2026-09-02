@@ -8,8 +8,6 @@ from opennote.tui.widgets.prompt import PromptBar
 
 
 class StubScreen:
-    """Minimal stand-in for ChatScreen (commands only call screen methods)."""
-
     def __init__(self):
         self.transcript = []
         self.calls = []
@@ -20,20 +18,8 @@ class StubScreen:
     def _show_help(self, _arg=""):
         self.calls.append("help")
 
-    def _new_session(self, _arg=""):
-        self.calls.append("new")
-
     def _clear_transcript(self, _arg=""):
         self.calls.append("clear")
-
-    def _open_sessions_dialog(self, _arg=""):
-        self.calls.append("sessions")
-
-    def _resume_session(self, _arg=""):
-        self.calls.append("resume")
-
-    def _resume_last(self, _arg=""):
-        self.calls.append("continue")
 
     def _switch_provider(self, _arg=""):
         self.calls.append("model")
@@ -41,7 +27,10 @@ class StubScreen:
     def _list_sources(self, _arg=""):
         self.calls.append("sources")
 
-    def _export_session(self, _arg=""):
+    def _remove_source(self, _arg=""):
+        self.calls.append("remove")
+
+    def _export_transcript(self, _arg=""):
         self.calls.append("export")
 
     def _set_mode_ask(self, _arg=""):
@@ -68,7 +57,7 @@ class StubScreen:
     def _open_palette(self, _arg=""):
         self.calls.append("palette")
 
-    def _open_notebooks_dialog(self, _arg=""):
+    def _show_notebook_picker(self, _arg=""):
         self.calls.append("notebooks")
 
     def _switch_notebook(self, _arg=""):
@@ -108,7 +97,7 @@ def test_lookup_missing_returns_none():
 
 def test_matches_prefix_filters_by_name():
     cmds = make_commands(StubScreen())
-    assert set(c.name for c in matches_prefix("se", cmds)) == {"search", "sessions"}
+    assert set(c.name for c in matches_prefix("se", cmds)) == {"search"}
     assert set(c.name for c in matches_prefix("/m", cmds)) == {"model", "mindmap"}
     assert matches_prefix("zz", cmds) == []
 

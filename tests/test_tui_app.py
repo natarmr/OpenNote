@@ -287,15 +287,12 @@ async def test_slash_popup_enter_with_multiple_matches(tmp_path):
         popup = app.screen.query_one("#command-popup", CommandPopup)
         await pilot.press("slash", "n")
         await pilot.pause()
-        # matches registry order: new, notebooks, notebook
-        assert [c.name for c in popup.commands] == ["new", "notebooks", "notebook"]
-        await pilot.press("down")  # highlight "notebooks"
-        await pilot.pause()
+        assert [c.name for c in popup.commands] == ["notebooks", "notebook"]
         await pilot.press("enter")
         await pilot.pause()
         from opennote.tui.dialogs import ItemListDialog
 
-        assert isinstance(app.screen, ItemListDialog)  # /notebooks, not raw "/n"
+        assert isinstance(app.screen, ItemListDialog)  # /notebooks
         await pilot.press("escape")
         await pilot.pause()
 
@@ -333,33 +330,27 @@ async def test_export_writes_session_markdown(tmp_path):
         await pilot.press("slash", "e", "x", "p", "o", "r", "t")
         await pilot.press("enter")
         await pilot.pause()
-        from opennote.agents.session import list_sessions
-
-        session_id = list_sessions(app.screen.notebook)[0]["id"]
-        export_path = app.screen.notebook.directory / "exports" / f"session-{session_id}.md"
+        export_path = app.screen.notebook.directory / "exports" / f"notebook-{app.screen.notebook.name}.md"
         assert export_path.exists()
         content = export_path.read_text(encoding="utf-8")
         assert "## You" in content and "## Assistant" in content
 
 
-async def test_sessions_dialog_resumes_picked(tmp_path):
-    from opennote.agents.session import list_sessions, new_session
-
+async def test_notebooks_picker_opens_choices(tmp_path):
     app = await _make_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        first = app.screen.session["id"]
-        second = new_session(app.screen.notebook, "groq", "gpt-x")["id"]
-        await pilot.press("slash", "s", "e", "s", "s", "i", "o", "n", "s")
+        await pilot.press("slash", "n", "o", "t", "e", "b", "o", "o", "k", "s")
         await pilot.press("enter")
         await pilot.pause()
         from opennote.tui.dialogs import ItemListDialog
 
         assert isinstance(app.screen, ItemListDialog)
-        await pilot.press("enter")  # picks the most recent (second) session
+        await pilot.press("escape")
         await pilot.pause()
-        assert app.screen.session["id"] == second
-        assert first != second
+        from opennote.tui.screens.chat import ChatScreen
+
+        assert isinstance(app.screen, ChatScreen)
 
 
 async def test_ctrl_p_opens_palette(tmp_path):
@@ -453,7 +444,7 @@ async def test_create_notebook_switches(tmp_path):
         await pilot.press("enter")
         await pilot.pause()
         assert app.screen.notebook.name == "notes"
-        assert app.screen.session is not None
+        assert app.screen.notebook is not None
         app.screen._manager.get("notes")
 
 
@@ -481,8 +472,11 @@ async def test_notebooks_dialog_switches(tmp_path):
         await pilot.pause()
         from opennote.tui.dialogs import ItemListDialog
 
-        assert isinstance(app.screen, ItemListDialog)
-        await pilot.press("enter")  # sorted: ["other", "t"], index 0 = "other"
+        assert isinstance(app.screen, ItemListDialog)  # 4-action picker
+        await pilot.press("enter")  # pick "Open existing notebook"
+        await pilot.pause()
+        assert isinstance(app.screen, ItemListDialog)  # notebook list
+        await pilot.press("enter")  # pick first (other)
         await pilot.pause()
         from opennote.tui.screens.chat import ChatScreen
 
@@ -581,7 +575,6 @@ async def test_connect_flow(tmp_path, monkeypatch):
         from opennote.tui.dialogs import ItemListDialog, InputDialog
 
         assert isinstance(app.screen, ItemListDialog)
-        # all_providers() order: anthropic, openai, opencode, cerebras, groq, google
         await pilot.press("down", "down", "down", "down")
         await pilot.press("enter")
         await pilot.pause()
@@ -589,18 +582,18 @@ async def test_connect_flow(tmp_path, monkeypatch):
         await pilot.press(*"sk-test")
         await pilot.press("enter")
         await pilot.pause()
-        # The just-entered key is passed straight to _open_connect_model, which
-        # validates it and opens the live-model picker.
         assert isinstance(app.screen, ItemListDialog)
-        await pilot.press("enter")  # pick the first ranked model ("m1")
+        await pilot.press("enter")
         await pilot.pause()
         assert isinstance(app.screen, chat_mod.ChatScreen)
-        assert app.screen.session["provider_id"] == "groq"
-        assert app.screen.session["model"] == client.model
+        assert app.screen.notebook.provider_id == "groq"
+        assert app.screen.notebook.model == client.model
         assert app.screen._client is client
 
 
 async def test_undo_last_turn_removes_exchange(tmp_path):
+    from opennote.transcript import load_transcript
+
     client = ScriptedClient(
         [ChatResponse(content="First answer.")], provider_id="groq", model="gpt-x"
     )
@@ -611,13 +604,13 @@ async def test_undo_last_turn_removes_exchange(tmp_path):
         await pilot.press(*"hello there")
         await pilot.press("enter")
         await _wait_idle(pilot, bar)
-        before = len(app.screen.session["messages"])
+        before = len(load_transcript(app.screen.notebook))
         assert before == 2
         assert "First answer." in _transcript_text(app.screen.transcript)
         await pilot.press("slash", "u", "n", "d", "o")
         await pilot.press("enter")
         await pilot.pause()
-        assert app.screen.session["messages"] == []
+        assert load_transcript(app.screen.notebook) == []
         text = _transcript_text(app.screen.transcript)
         assert "First answer." not in text
         assert "Undid the last turn" in text
@@ -645,10 +638,9 @@ async def test_details_opens_info_dialog(tmp_path):
 
         assert isinstance(app.screen, InfoDialog)
         body = app.screen.query_one("#dialog-body").render().plain
-        assert "Session" in body
         assert "Notebook" in body
         assert "gpt-x" in body
         assert "groq" in body
-        assert "t" in body  # notebook name
+        assert "t" in body
         await pilot.press("escape")
         await pilot.pause()

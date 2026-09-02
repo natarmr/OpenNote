@@ -1,8 +1,5 @@
-"""OpenNote CLI.
+"""OpenNote CLI."""
 
-Phase 0: notebook management + ingestion + search. The agent shell and BYOK
-auth land in later phases.
-"""
 from __future__ import annotations
 
 import logging
@@ -19,8 +16,9 @@ from opennote.auth.cli import auth_app
 from opennote.chat.ask import ask
 from opennote.chat.client import ChatError, default_provider, get_client
 from opennote.ingest.pipeline import ingest as run_ingest
-from opennote.notebooks import Notebook, NotebookManager
+from opennote.notebooks import Notebook, NotebookManager, current_project
 from opennote.retrieval.retriever import Retriever, render_results
+from opennote.transcript import load_transcript
 
 app = typer.Typer(help="OpenNote - grounded, cited Q&A over your own sources.")
 manager = NotebookManager()
@@ -28,11 +26,6 @@ app.add_typer(auth_app, name="auth")
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context, light: bool = False):
-    """OpenNote - grounded, cited Q&A over your own sources.
-
-    Run bare to launch the terminal UI, or a subcommand (create, ingest,
-    search, ask, chat, auth, ...) for the CLI.
-    """
     if ctx.invoked_subcommand is None:
         from opennote.tui.app import main as tui_main
 
@@ -44,9 +37,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-# LLM output can contain any Unicode; emit UTF-8 so no character is lost or
-# crashes the console (cp1252 defaults on Windows). Unencodable chars, if any,
-# are replaced rather than raised.
 for _stream in (sys.stdout, sys.stderr, sys.stdin):
     if hasattr(_stream, "reconfigure"):
         try:
@@ -56,19 +46,30 @@ for _stream in (sys.stdout, sys.stderr, sys.stdin):
 
 
 def _notebook(name: Optional[str], create_if_missing: bool = False) -> Notebook:
-    notebook_name = name or "default"
-    try:
-        return manager.get(notebook_name)
-    except KeyError:
-        if create_if_missing:
-            typer.echo(f"Creating notebook '{notebook_name}'...")
-            return manager.create(notebook_name)
-        raise typer.BadParameter(
-            f"Notebook '{notebook_name}' does not exist. "
-            f"Run 'opennote create {notebook_name}' first."
-        )
-    except ValueError as e:
-        raise typer.BadParameter(str(e))
+    # Explicit name
+    if name:
+        try:
+            return manager.get(name)
+        except KeyError:
+            if create_if_missing:
+                typer.echo(f"Creating notebook '{name}'...")
+                return manager.create(name, project=current_project())
+            raise typer.BadParameter(
+                f"Notebook '{name}' does not exist. Run 'opennote create {name}' first."
+            )
+        except ValueError as e:
+            raise typer.BadParameter(str(e))
+    # No name: most recent for this directory
+    notebooks = manager.list_for_project(current_project())
+    if notebooks:
+        return notebooks[0]
+    if create_if_missing:
+        auto = manager.next_notebook_name(current_project())
+        typer.echo(f"Creating notebook '{auto}'...")
+        return manager.create(auto, project=current_project())
+    raise typer.BadParameter(
+        "No notebooks for this directory. Run 'opennote create <name>' or 'opennote ingest <path>'."
+    )
 
 
 @app.command("create")
@@ -80,7 +81,7 @@ def create(
 ):
     """Create a new notebook."""
     try:
-        manager.create(name, embed_model=model)
+        manager.create(name, embed_model=model, project=current_project())
     except (FileExistsError, ValueError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -88,15 +89,18 @@ def create(
 
 
 @app.command("list")
-def list_notebooks():
-    """List all notebooks."""
-    notebooks = manager.list()
+def list_notebooks(
+    all: bool = typer.Option(False, "--all", help="List all notebooks (all directories)."),
+):
+    """List notebooks."""
+    notebooks = manager.list() if all else manager.list_for_project(current_project())
     if not notebooks:
         typer.echo("No notebooks found. Run 'opennote create <name>'.")
         return
     for nb in notebooks:
         n = len(nb.sources)
-        typer.echo(f"  {nb.name:<20} model={nb.embed_model:<30} sources={n}")
+        proj = nb.project or "(legacy)"
+        typer.echo(f"  {nb.name:<20} model={nb.embed_model:<30} sources={n}/5 project={proj}")
 
 
 @app.command("delete")
@@ -124,13 +128,44 @@ def rename(
     typer.echo(f"Renamed '{old}' to '{new}'.")
 
 
+@app.command("remove")
+def remove_source_cmd(
+    source: str = typer.Argument(..., help="Source path substring to remove."),
+    notebook: Optional[str] = typer.Option(None, "--notebook", "-n", help="Notebook (default: most recent in this dir)."),
+):
+    """Remove a source from a notebook (frees a slot)."""
+    nb = _notebook(notebook)
+    # Resolve source: exact match first, then substring
+    if source in nb.sources:
+        target = source
+    else:
+        matches = [s for s in nb.sources if source in s]
+        if not matches:
+            typer.echo(f"Error: no source matching '{source}'.", err=True)
+            raise typer.Exit(1)
+        if len(matches) > 1:
+            typer.echo(f"Error: multiple sources match '{source}':", err=True)
+            for m in matches:
+                typer.echo(f"  {m}", err=True)
+            raise typer.Exit(1)
+        target = matches[0]
+    from opennote.ingest.pipeline import remove_source
+
+    try:
+        remove_source(nb, target)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Removed source '{target}' from notebook '{nb.name}'.")
+
+
 @app.command("ingest")
 def ingest(
     target: str = typer.Argument(
         ".", help="A source file, directory, or http(s) URL to ingest (default: current dir)."
     ),
     notebook: Optional[str] = typer.Option(
-        None, "--notebook", "-n", help="Notebook to ingest into (default: 'default')."
+        None, "--notebook", "-n", help="Notebook to ingest into (default: most recent in this dir, or auto-create)."
     ),
     parser: str = typer.Option(
         "auto", "--parser", help="PDF parser: auto, docling, or fallback."
@@ -173,7 +208,7 @@ def ingest(
 def search(
     query: str = typer.Argument(..., help="The query to search for."),
     notebook: Optional[str] = typer.Option(
-        None, "--notebook", "-n", help="Notebook to search (default: 'default')."
+        None, "--notebook", "-n", help="Notebook to search (default: most recent in this dir)."
     ),
     top_k: int = typer.Option(3, "--top-k", "-k", help="Number of results to return."),
     source: Optional[str] = typer.Option(
@@ -197,7 +232,7 @@ def golden(
         ..., help="Path to a golden set (TSV): query, source, optional pages."
     ),
     notebook: Optional[str] = typer.Option(
-        None, "--notebook", "-n", help="Notebook to evaluate (default: 'default')."
+        None, "--notebook", "-n", help="Notebook to evaluate (default: most recent in this dir)."
     ),
     top_k: int = typer.Option(5, "--top-k", "-k", help="Recall@k to measure."),
 ):
@@ -229,7 +264,7 @@ def golden(
 def ask_cmd(
     question: str = typer.Argument(..., help="The question to ask your sources."),
     notebook: Optional[str] = typer.Option(
-        None, "--notebook", "-n", help="Notebook to ask over (default: 'default')."
+        None, "--notebook", "-n", help="Notebook to ask over (default: most recent in this dir)."
     ),
     provider: Optional[str] = typer.Option(
         None, "--provider", "-p", help="LLM provider id (default: first configured)."
@@ -251,34 +286,29 @@ def ask_cmd(
 @app.command("chat")
 def chat_cmd(
     notebook: Optional[str] = typer.Option(
-        None, "--notebook", "-n", help="Notebook to chat over (default: 'default')."
+        None, "--notebook", "-n", help="Notebook to chat over (default: new notebook in this dir)."
     ),
     provider: Optional[str] = typer.Option(
         None, "--provider", "-p", help="LLM provider id (default: first configured)."
     ),
-    new_session: bool = typer.Option(
-        False, "--new", help="Start a fresh session (do not resume)."
-    ),
-    resume: Optional[str] = typer.Option(
-        None, "--resume", help="Resume a specific session id (default: most recent)."
+    cont: bool = typer.Option(
+        False, "--continue", "--cont", help="Continue the most recent notebook in this directory."
     ),
 ):
-    """Interactive, multi-turn grounded Q&A over a notebook.
-
-    The model drives retrieval: it decides when to search and can search several
-    times before answering. Sessions are persisted per notebook and resume
-    automatically. Slash commands: /help /exit /new /sessions /sources /model <id>
-    """
+    """Interactive, multi-turn grounded Q&A over a notebook."""
     from opennote.agents.loop import agent_turn
-    from opennote.agents.session import (
-        append_messages,
-        list_sessions,
-        load_session,
-        new_session as create_new_session,
-        save_session,
-    )
+    from opennote.transcript import append_messages
 
-    nb = _notebook(notebook)
+    # Resolve notebook: explicit -n, --continue (most recent), or auto-create new
+    if notebook:
+        nb = _notebook(notebook)
+    elif cont:
+        nb = _notebook(None)
+    else:
+        # Bare chat: create a fresh notebook in this directory
+        auto = manager.next_notebook_name(current_project())
+        nb = manager.create(auto, project=current_project())
+        typer.echo(f"Started notebook '{nb.name}'.")
 
     try:
         pid = provider or default_provider()
@@ -287,29 +317,14 @@ def chat_cmd(
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
 
-    # --- session setup ---------------------------------------------------
-    if resume:
-        session = load_session(nb, resume)
-        if session is None:
-            typer.echo(f"Error: session '{resume}' not found.", err=True)
-            raise typer.Exit(1)
-    elif not new_session:
-        sessions = list_sessions(nb)
-        session = sessions[0] if sessions else None
+    history = load_transcript(nb)
+    if history:
+        typer.echo(f"Notebook '{nb.name}' — {len(history)} messages of history loaded.")
     else:
-        session = None
-
-    if session is None:
-        session = create_new_session(nb, client.provider_id, client.model)
-        typer.echo(f"Started new session {session['id'][:8]}…")
-    else:
-        typer.echo(
-            f"Resumed session {session['id'][:8]}… "
-            f"({len(session['messages'])} messages)"
-        )
+        typer.echo(f"Notebook '{nb.name}' — fresh.")
 
     typer.echo(f"OpenNote chat over notebook '{nb.name}' — provider: {pid}")
-    typer.echo("Slash commands: /help /exit /new /sessions /sources /model <id>")
+    typer.echo("Slash commands: /help /exit /clear /sources /remove /model <id>")
     typer.echo("=" * 60)
 
     while True:
@@ -322,7 +337,6 @@ def chat_cmd(
         if not user_input:
             continue
 
-        # --- slash commands ----------------------------------------------
         if user_input.startswith("/"):
             parts = re.split(r"\s+", user_input.strip(), maxsplit=1)
             cmd = parts[0].lower()
@@ -331,27 +345,21 @@ def chat_cmd(
             if cmd == "/help":
                 typer.echo(
                     "  /help      show this help\n"
-                    "  /exit      end the session\n"
-                    "  /new       start a fresh session\n"
-                    "  /sessions  list saved sessions\n"
+                    "  /exit      end\n"
+                    "  /clear     clear transcript\n"
                     "  /sources   list notebook sources\n"
+                    "  /remove    remove a source\n"
                     "  /model ID  switch LLM provider (e.g. /model groq)"
                 )
             elif cmd == "/exit":
                 typer.echo("Goodbye!")
                 break
-            elif cmd == "/new":
-                session = create_new_session(nb, client.provider_id, client.model)
-                typer.echo(f"Started new session {session['id'][:8]}…")
-            elif cmd == "/sessions":
-                from opennote.agents.session import list_session_meta
+            elif cmd == "/clear":
+                from opennote.transcript import clear_transcript
 
-                for s in list_session_meta(nb):
-                    marker = "*" if s["id"] == session["id"] else " "
-                    typer.echo(
-                        f"  {marker} {s['id'][:8]}… model={s.get('model')} "
-                        f"msgs={s.get('msg_count', 0)} updated={s.get('updated', '')[:19]}"
-                    )
+                clear_transcript(nb)
+                history = []
+                typer.echo("Transcript cleared.")
             elif cmd == "/sources":
                 try:
                     retriever = Retriever(nb)
@@ -360,6 +368,26 @@ def chat_cmd(
                     continue
                 for src in retriever.sources():
                     typer.echo(f"  {src}")
+            elif cmd == "/remove":
+                if not arg:
+                    typer.echo("Usage: /remove <source-substring>")
+                    continue
+                from opennote.ingest.pipeline import remove_source
+
+                matches = [s for s in nb.sources if arg in s]
+                if not matches:
+                    typer.echo(f"No source matching '{arg}'.")
+                    continue
+                if len(matches) > 1:
+                    typer.echo("Multiple matches:")
+                    for m in matches:
+                        typer.echo(f"  {m}")
+                    continue
+                try:
+                    remove_source(nb, matches[0])
+                    typer.echo(f"Removed {matches[0]}")
+                except Exception as e:
+                    typer.echo(f"Error: {e}", err=True)
             elif cmd == "/model":
                 if not arg:
                     typer.echo("Usage: /model <provider-id>")
@@ -367,9 +395,9 @@ def chat_cmd(
                 try:
                     client = get_client(arg)
                     pid = client.provider_id
-                    session["provider_id"] = client.provider_id
-                    session["model"] = client.model
-                    save_session(nb, session)
+                    nb.provider_id = client.provider_id
+                    nb.model = client.model
+                    nb.save()
                     typer.echo(f"Provider switched to {pid} ({client.model}).")
                 except (ChatError, ValueError) as e:
                     typer.echo(f"Error: {e}", err=True)
@@ -377,21 +405,20 @@ def chat_cmd(
                 typer.echo("Unknown command. Type /help for available commands.")
             continue
 
-        # --- regular question ---------------------------------------------
         typer.echo(f"\n({pid}) Question: {user_input}")
         try:
             agent = agent_turn(
                 nb,
                 user_input,
                 provider_id=pid,
-                history=session["messages"],
+                history=history,
                 client=client,
             )
         except Exception as e:
             typer.echo(f"Error: {e}", err=True)
             continue
 
-        session = append_messages(nb, session["id"], agent.messages)
+        history = append_messages(nb, agent.messages)
         result = agent.result
         typer.echo(f"\n--- Answer (via {result.provider_id}:{result.model}) ---\n")
         typer.echo(result.answer)
@@ -406,16 +433,9 @@ def local_cmd(
     n_ctx: int = typer.Option(4096, "--n-ctx", help="Context window size"),
     threads: Optional[int] = typer.Option(None, "--threads", help="Number of CPU threads"),
 ) -> None:
-    """Manage local GGUF models.
-
-    ``opennote local add <path>`` registers a model file.
-    ``opennote local list`` shows registered models.
-    ``opennote local use <name>`` activates a model.
-    ``opennote local remove <name>`` unregisters a model.
-    """
     from opennote.auth.local import add_model, list_models, remove_model, set_active, get_active, validate_name
 
-    home = None  # will use OPENNOTE_HOME or ~/.opennote
+    home = None
 
     if command == "add":
         if not path:
@@ -471,7 +491,6 @@ def local_cmd(
 
 @app.command("version")
 def version():
-    """Print the version."""
     typer.echo(f"opennote {__version__}")
 
 

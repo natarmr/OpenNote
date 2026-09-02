@@ -1,18 +1,17 @@
-"""CLI regression tests (L09, L11, L24, L31, L37, L41)."""
+"""CLI regression tests."""
 from __future__ import annotations
 
 import pytest
 from typer.testing import CliRunner
 
-from opennote.agents.session import append_messages, new_session
 from opennote.notebooks import NotebookManager
+from opennote.transcript import append_messages
 
 runner = CliRunner()
 
 
 @pytest.fixture
 def cli_mod(monkeypatch, tmp_path):
-    """A clean CLI module bound to an isolated OPENNOTE_HOME."""
     home = tmp_path / "home"
     monkeypatch.setenv("OPENNOTE_HOME", str(home))
     import opennote.cli as mod
@@ -27,16 +26,12 @@ class FakeClient:
         self.model = model
 
 
-# --- L09: auth verify with an unknown provider is a friendly error ---
-
 def test_auth_verify_unknown_provider_friendly_error(cli_mod):
     result = runner.invoke(cli_mod.app, ["auth", "verify", "nope"])
     assert result.exit_code == 1
     assert "Error:" in result.output
     assert "Traceback" not in result.output
 
-
-# --- L11: searching an empty notebook does not traceback ---
 
 def test_search_empty_notebook_friendly_error(cli_mod):
     cli_mod.manager.create("default")
@@ -55,56 +50,38 @@ def test_golden_empty_notebook_friendly_error(cli_mod, tmp_path):
     assert "Error:" in result.output
 
 
-# --- L41: resume must pick the most recent session (not always start fresh) ---
-
-def test_chat_resumes_most_recent_session(cli_mod, monkeypatch):
+def test_chat_loads_transcript_history(cli_mod, monkeypatch):
     nb = cli_mod.manager.create("default")
-    old = new_session(nb, "groq", "m")
-    append_messages(nb, old["id"], [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}])
-    recent = new_session(nb, "groq", "m")
-
+    append_messages(nb, [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}])
     monkeypatch.setattr(cli_mod, "default_provider", lambda: "groq")
     monkeypatch.setattr(cli_mod, "get_client", lambda pid: FakeClient())
     result = runner.invoke(cli_mod.app, ["chat", "-n", "default"], input="/exit\n")
     assert result.exit_code == 0
-    assert "Resumed session" in result.output
-    assert recent["id"][:8] in result.output
-    assert old["id"][:8] not in result.output
+    assert "2 messages" in result.output or "history loaded" in result.output
 
-
-# --- L37: /model with tab-separated input still parses the arg ---
 
 def test_chat_slash_model_tab_parsed(cli_mod, monkeypatch):
     nb = cli_mod.manager.create("default")
-    new_session(nb, "groq", "m")
     monkeypatch.setattr(cli_mod, "default_provider", lambda: "groq")
     monkeypatch.setattr(cli_mod, "get_client", lambda pid: FakeClient(provider_id=pid))
     result = runner.invoke(cli_mod.app, ["chat", "-n", "default"], input="/model\tgroq\n/exit\n")
     assert "Provider switched to groq" in result.output
 
 
-# --- L24: /model updates session metadata on disk ---
-
-def test_chat_slash_model_updates_session_metadata(cli_mod, monkeypatch):
-    from opennote.agents.session import load_session, list_sessions
-
+def test_chat_slash_model_updates_notebook_metadata(cli_mod, monkeypatch):
     nb = cli_mod.manager.create("default")
-    new_session(nb, "groq", "m")
     monkeypatch.setattr(cli_mod, "default_provider", lambda: "groq")
     monkeypatch.setattr(cli_mod, "get_client", lambda pid: FakeClient(provider_id=pid))
     runner.invoke(cli_mod.app, ["chat", "-n", "default"], input="/model openai\n/exit\n")
-    session = load_session(nb, list_sessions(nb)[0]["id"])
-    assert session["provider_id"] == "openai"
-    assert session["model"] == "openai/gpt-oss-120b"
+    reloaded = cli_mod.manager.get("default")
+    assert reloaded.provider_id == "openai"
+    assert reloaded.model == "openai/gpt-oss-120b"
 
-
-# --- L31: a network error in the loop does not kill the REPL ---
 
 def test_chat_survives_loop_network_error(cli_mod, monkeypatch):
     import opennote.agents.loop as loop_mod
 
     nb = cli_mod.manager.create("default")
-    new_session(nb, "groq", "m")
     monkeypatch.setattr(cli_mod, "default_provider", lambda: "groq")
     monkeypatch.setattr(cli_mod, "get_client", lambda pid: FakeClient())
 
@@ -120,3 +97,38 @@ def test_chat_survives_loop_network_error(cli_mod, monkeypatch):
     result = runner.invoke(cli_mod.app, ["chat", "-n", "default"], input="hello\n/exit\n")
     assert result.exit_code == 0
     assert "Error: gateway timeout" in result.output
+
+
+def test_ingest_cap_rejected(cli_mod, tmp_path, monkeypatch):
+    """Ingesting a 6th distinct source is rejected."""
+    from unittest.mock import MagicMock
+
+    nb = cli_mod.manager.create("default")
+    for i in range(5):
+        nb.sources.append(f"/tmp/src{i}.txt")
+    nb.save()
+    mock_manifest = MagicMock()
+    mock_manifest.is_indexed.return_value = False
+    mock_vm = MagicMock()
+    mock_vm.manifest = mock_manifest
+    monkeypatch.setattr("opennote.ingest.pipeline.VectorStoreManager", lambda *a, **kw: mock_vm)
+    # Mock file hash and parser to avoid real embedding
+    monkeypatch.setattr("opennote.ingest.pipeline.compute_file_hash", lambda p: "abc")
+    monkeypatch.setattr("opennote.ingest.pipeline.get_parser_for_file", lambda *a, **kw: MagicMock(parse=lambda p, s: [MagicMock()]))
+    mock_vm.add_chunks.return_value = 1
+    f = tmp_path / "extra.txt"
+    f.write_text("hello", encoding="utf-8")
+    result = runner.invoke(cli_mod.app, ["ingest", str(f), "-n", "default"])
+    assert result.exit_code == 1
+    assert "limit" in result.output.lower()
+
+
+def test_remove_source_cmd(cli_mod):
+    nb = cli_mod.manager.create("default")
+    nb.sources.append("/tmp/a.txt")
+    nb.save()
+    result = runner.invoke(cli_mod.app, ["remove", "a.txt", "-n", "default"])
+    assert result.exit_code == 0
+    assert "Removed" in result.output
+    reloaded = cli_mod.manager.get("default")
+    assert "/tmp/a.txt" not in reloaded.sources

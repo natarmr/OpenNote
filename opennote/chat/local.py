@@ -38,7 +38,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from opennote.agents.session import trim_messages
+from opennote.transcript import trim_messages
 from opennote.chat.client import LLMClient, ChatResponse
 
 # --------------------------------------------------------------------------- #

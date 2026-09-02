@@ -1,7 +1,7 @@
 """Small modal dialogs: informational and item-list (pick one)."""
 from __future__ import annotations
 
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from textual.app import ComposeResult
 from textual.binding import Binding

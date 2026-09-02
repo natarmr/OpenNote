@@ -100,7 +100,16 @@ class HtmlParser(SourceParser):
     """Chunk a local .html / .htm file, citing by source + section heading."""
 
     def parse(self, file_path: Path, spec: ChunkSpec) -> List[DocumentChunk]:
+        try:
+            if file_path.stat().st_size > 50 * 1024 * 1024:
+                logger.warning(f"Skipping '{file_path.name}': file too large (>50MB).")
+                return []
+        except OSError:
+            pass
         html = file_path.read_text(encoding="utf-8-sig", errors="replace")
+        if "\x00" in html or html.count("\ufffd") > len(html) * 0.1:
+            logger.warning(f"Skipping '{file_path.name}': appears binary or heavily corrupted.")
+            return []
         sections = _extract_sections(html)
         chunks = _chunk_sections(sections, str(file_path.resolve()), file_path.name, spec)
         logger.info(f"Extracted {len(chunks)} chunk(s) from '{file_path.name}'.")

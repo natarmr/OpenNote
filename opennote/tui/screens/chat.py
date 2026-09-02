@@ -28,7 +28,7 @@ from opennote.chat.ask import AskResult
 from opennote.chat.client import ChatError, default_provider, get_client
 from opennote.notebooks import Notebook, NotebookManager
 from opennote.retrieval.retriever import Retriever, render_results
-from opennote.tui.commands import help_text, lookup, make_commands
+from opennote.tui.commands import lookup, make_commands
 from opennote.tui.dialogs import HelpDialog, InfoDialog, ask_input, item_list
 from opennote.tui.theme import DEFAULT, LIGHT, Palette
 from opennote.tui.widgets.prompt import MODE_LABELS, MODES, PromptBar, PromptInput
@@ -150,19 +150,22 @@ class ChatScreen(Screen):
     def _open_palette(self) -> None:
         self.action_open_palette()
 
-    def _on_palette_done(self, value: Optional[str]) -> None:
-        pass
+    def _reveal_transcript(self) -> None:
+        if not self.has_class("has-history"):
+            self.add_class("has-history")
 
     def on_mount(self) -> None:
         self.prompt = self.query_one("#prompt-bar", PromptBar)
         self.transcript = self.query_one("#transcript", Transcript)
+        self.transcript.palette = self.palette
         self.commands = make_commands(self)
         self.prompt.set_commands(self.commands)
         self._resolve_notebook()
         self._resolve_provider()
         self._resolve_session()
         self.transcript.add_banner(self.palette)
-        if self.session:
+        if self.session and self.session.get("messages"):
+            self._reveal_transcript()
             self._render_history()
         self.prompt.set_mode(self.mode)
         self.prompt.focus_input()
@@ -445,8 +448,8 @@ class ChatScreen(Screen):
         try:
             from opennote.audio.tts import save_audio_artifact
 
-            art = save_audio_artifact(topic, notebook.artifacts_dir, notebook.name if hasattr(notebook, "name") else "default")
-            detail = str(art.path) if hasattr(art, "path") else str(art)
+            art_path = save_audio_artifact(topic, notebook.artifacts_dir, notebook.name)
+            detail = str(art_path)
         except Exception as e:
             logger.exception("Audio generation failed")
             self.app.call_from_thread(self.post_message, StudioFailed(str(e)))
@@ -459,8 +462,8 @@ class ChatScreen(Screen):
         try:
             from opennote.video import save_video_artifact
 
-            art = save_video_artifact(topic, notebook.artifacts_dir, notebook.name if hasattr(notebook, "name") else "default")
-            detail = str(art.path) if hasattr(art, "path") else str(art)
+            art_path = save_video_artifact(topic, notebook.artifacts_dir, notebook.name)
+            detail = str(art_path)
         except Exception as e:
             logger.exception("Video generation failed")
             self.app.call_from_thread(self.post_message, StudioFailed(str(e)))
@@ -470,127 +473,83 @@ class ChatScreen(Screen):
     def _generate_studio_artifact(self, kind: str, topic: str, notebook: Notebook) -> str:
         """Run one studio generator with retrieved context and save the artifact.
 
-        If a client is configured, the rendered prompt is sent to the LLM and the
-        answer is saved.  Without a client it degrades to a structured, citation‑
-        backed digest of the retrieved chunks.
+        Delegates prompt rendering to ``opennote.artifacts`` templates (single owner).
         """
-        from opennote.artifacts import save_artifact
+        from opennote.artifacts import (
+            create_mindmap,
+            generate_briefing,
+            generate_faq,
+            generate_study_guide,
+            generate_suggested_questions,
+            generate_timeline,
+            save_artifact,
+        )
         from opennote.retrieval.retriever import Retriever
 
-        retriever = self._retriever or Retriever(notebook, top_k=8)
-
+        # F2 fix: Retriever construction inside try so empty-notebook shows friendly error
         try:
+            retriever = self._retriever or Retriever(notebook, top_k=8)
             results = retriever.search(topic)
         except ValueError:
             self.transcript.add_error("No sources indexed yet. Run /ingest first.")
             return ""
 
-        # Render the retrieved chunks into grounded context text with [n] citations.
+        # Build grounded context with [n] citations and full content for LLM prompts
         context_parts: List[str] = []
         for i, r in enumerate(results, start=1):
-            src = r.metadata
-            fn = src.get("filename", "unknown")
-            ctx = src.get("page_count", 1)
-            context_parts.append(f"[{i}] {fn} (page {ctx})")
-        context_text = "\n".join(context_parts)
+            fn = r.metadata.get("filename", "unknown")
+            citation = f"[{i}] {fn}"
+            chunk = r.content[:800].replace("\n", " ")
+            context_parts.append(f"{citation}: {chunk}")
+        context_text = "\n".join(context_parts) if context_parts else "No context available."
 
-        # ------------------------------------------------------------------
-        # Kind‑specific prompt rendering (the same templates used by the LLM‑free
-        # fallback).  The {{CONTEXT}} placeholder is replaced with the real text
-        # built above; {{QUESTION}} is set to the user‑supplied topic.
-        # ------------------------------------------------------------------
-        def _render(kind: str) -> str:
-            if kind == 'mindmap':
-                headings: List[str] = []
-                for i, r in enumerate(results, start=1):
-                    fn = r.metadata.get('filename', 'unknown')
-                    headings.append(f'[{i}] {fn}: {r.content[:60]}')
-                lines: List[str] = ['# ' + topic] + headings
-                return '\n'.join(lines)
-            if kind == 'study':
-                lines: List[str] = []
-                lines.append('CONTEXT: ' + context_text)
-                lines.append('QUESTION: ' + topic)
-                return '\n'.join(lines)
-            if kind == 'faq':
-                lines: List[str] = []
-                lines.append('CONTEXT: ' + context_text)
-                lines.append('FAQ:')
-                return '\n'.join(lines)
-            if kind == 'briefing':
-                lines: List[str] = []
-                lines.append('CONTEXT: ' + context_text)
-                lines.append('BRIEFING:')
-                return '\n'.join(lines)
-            if kind == 'timeline':
-                lines: List[str] = []
-                lines.append('CONTEXT: ' + context_text)
-                lines.append('TIMELINE:')
-                return '\n'.join(lines)
-            if kind == 'suggest':
-                lines: List[str] = []
-                lines.append('CONTEXT: ' + context_text)
-                lines.append('USER QUESTION: ' + topic)
-                return '\n'.join(lines)
-            raise ValueError('Unsupported kind: ' + kind)
+        # Kind -> template rendering (single owner: artifacts.py)
+        prompts = {
+            "study": generate_study_guide(topic, context_text),
+            "faq": generate_faq(context_text),
+            "briefing": generate_briefing(topic, context_text),
+            "timeline": generate_timeline(topic, context_text),
+            "suggest": generate_suggested_questions(topic, context_text),
+        }
+        if kind == "mindmap":
+            # Mindmap uses hierarchical outline; build via artifacts helper when possible
+            items = [f"{r.metadata.get('filename','unknown')}: {r.content[:60]}" for r in results[:8]]
+            if self._client is None:
+                # LLM-free mindmap fallback via artifacts helper
+                art = create_mindmap(topic, items, notebook.directory)
+                return str(art.path)
+            prompt = "# " + topic + "\n" + "\n".join(f"[{i+1}] {it}" for i, it in enumerate(items))
+        elif kind in prompts:
+            prompt = prompts[kind]
+        else:
+            raise ValueError(f"Unsupported kind: {kind}")
 
-        prompt = _render(kind)
-        # ------------------------------------------------------------------
-        # If a client is available, send the prompt as a chat turn and save the
-        # LLM's answer as the artifact body.  Otherwise fall back to a structured
-        # digest of the retrieved chunks.
-        # ------------------------------------------------------------------
         if self._client is not None:
             try:
                 answer: str = self._client.chat([{"role": "user", "content": prompt}]).content
             except Exception as e:
                 answer = f"LLM error: {e}"
-            return save_artifact(
-                kind=kind,
-                title=topic,
-                body=answer,
-                notebook_dir=notebook.directory,
-            )
-        # LLM‑free fallback: build a concise digest from the retrieved chunks.
-        if kind == "mindmap":
-            headings: List[str] = []
-            for i, r in enumerate(results, start=1):
-                fn = r.metadata.get("filename", "unknown")
-                headings.append(f"• {fn}: {r.content[:50]}")
-            body = f"Mind‑map overview for **{topic}**.\n" + "\n".join(headings)
-        elif kind == "study":
-            bullets: List[str] = []
-            for i, r in enumerate(results[:5]):
-                headings = r.metadata.get("filename", "unknown")
-                bullets.append(f"• {headings}: {r.content[:80]}")
-            body = f"Study guide for **{topic}** based on {len(results)} chunks.\n" + "\n".join(bullets)
-        elif kind == "faq":
-            qa: List[str] = []
-            for i, r in enumerate(results[:5]):
-                qa.append(f"Q: What does {r.metadata.get('filename','unknown')} say about {topic}?\nA: {r.content[:100]}")
-            body = f"FAQ for **{topic}** from {len(results)} sources.\n" + "\n".join(qa)
-        elif kind == "briefing":
-            body = f"Briefing for **{topic}** from {len(results)} sources.\n" + "\n".join(
-                f"• {r.metadata.get('filename','unknown')}: {r.content[:120]}" for r in results[:5]
-            )
-        elif kind == "timeline":
-            body = f"Timeline for **{topic}** from {len(results)} sources.\n" + "\n".join(
-                f"- {r.metadata.get('filename','unknown')}: {r.content[:80]}" for r in results[:8]
-            )
-        elif kind == "suggest":
-            questions: List[str] = []
-            for i, r in enumerate(results[:5]):
-                questions.append(f"• Suggested question from {r.metadata.get('filename','unknown')}")
-            body = f"Suggested questions for **{topic}** from {len(results)} sources.\n" + "\n".join(questions)
-        else:
-            body = ""
+            art = save_artifact(kind=kind, title=topic, body=answer, notebook_dir=notebook.directory)
+            return str(art.path)
 
-        return save_artifact(
-            kind=kind,
-            title=topic,
-            body=body,
-            notebook_dir=notebook.directory,
-        )
+        # LLM-free fallback: consolidated digest table (deduplicated)
+        fallback_templates = {
+            "study": f"Study guide for **{topic}** based on {len(results)} chunks.\n" + "\n".join(
+                f"• {r.metadata.get('filename','unknown')}: {r.content[:80]}" for r in results[:5]),
+            "faq": f"FAQ for **{topic}** from {len(results)} sources.\n" + "\n".join(
+                f"Q: What does {r.metadata.get('filename','unknown')} say about {topic}?\nA: {r.content[:100]}" for r in results[:5]),
+            "briefing": f"Briefing for **{topic}** from {len(results)} sources.\n" + "\n".join(
+                f"• {r.metadata.get('filename','unknown')}: {r.content[:120]}" for r in results[:5]),
+            "timeline": f"Timeline for **{topic}** from {len(results)} sources.\n" + "\n".join(
+                f"- {r.metadata.get('filename','unknown')}: {r.content[:80]}" for r in results[:8]),
+            "suggest": f"Suggested questions for **{topic}** from {len(results)} sources.\n" + "\n".join(
+                f"• Suggested question from {r.metadata.get('filename','unknown')}" for r in results[:5]),
+            "mindmap": f"Mind‑map overview for **{topic}**.\n" + "\n".join(
+                f"• {r.metadata.get('filename','unknown')}: {r.content[:50]}" for r in results[:5]),
+        }
+        body = fallback_templates.get(kind, "")
+        art = save_artifact(kind=kind, title=topic, body=body, notebook_dir=notebook.directory)
+        return str(art.path)
 
     def on_turn_result(self, msg: TurnResult) -> None:
         self.transcript.add_answer(msg.answer)
@@ -869,7 +828,6 @@ class ChatScreen(Screen):
         self.app.theme = self.app.palette.name
         self.palette = self.app.palette
         self.transcript.add_banner(self.app.palette)
-        self.transcript.add_info(f"Theme: {self.app.palette.name}")
 
     def _new_session(self, _arg: str = "") -> None:
         if self.notebook is None:
@@ -919,14 +877,15 @@ class ChatScreen(Screen):
             self.transcript.add_info("No artifacts yet. Use /mindmap, /study, /faq, etc.")
             return
         try:
-            import subprocess as _sp
-
             if os.name == "nt":
-                _sp.Popen(["cmd", "/c", "start", "", str(target)], shell=True)
-            elif sys.platform == "darwin":
-                _sp.Popen(["open", str(target)])
+                os.startfile(str(target))  # type: ignore[attr-defined]
             else:
-                _sp.Popen(["xdg-open", str(target)])
+                import subprocess as _sp
+
+                if sys.platform == "darwin":
+                    _sp.Popen(["open", str(target)])
+                else:
+                    _sp.Popen(["xdg-open", str(target)])
         except Exception as e:
             self.transcript.add_error(f"Failed to open {target}: {e}")
             return

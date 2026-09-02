@@ -16,13 +16,15 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from opennote.chat.client import ChatError
+from opennote.fsutil import atomic_write_json, now_iso
 
 SESSIONS_DIR_NAME = "sessions"
 SESSION_EXT = ".json"
+META_EXT = ".meta.json"
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return now_iso()
 
 
 def _sessions_dir(notebook) -> Path:
@@ -31,6 +33,22 @@ def _sessions_dir(notebook) -> Path:
 
 def _session_path(notebook, session_id: str) -> Path:
     return _sessions_dir(notebook) / f"{session_id}{SESSION_EXT}"
+
+
+def _meta_path(notebook, session_id: str) -> Path:
+    return _sessions_dir(notebook) / f"{session_id}{META_EXT}"
+
+
+def _session_meta(session: Dict) -> Dict:
+    """The lightweight listing fields for a session (L36)."""
+    return {
+        "id": session.get("id", ""),
+        "created": session.get("created", ""),
+        "updated": session.get("updated", ""),
+        "provider_id": session.get("provider_id", ""),
+        "model": session.get("model", ""),
+        "msg_count": len(session.get("messages") or []),
+    }
 
 
 def load_session(notebook, session_id: str) -> Optional[Dict]:
@@ -51,7 +69,8 @@ def load_session(notebook, session_id: str) -> Optional[Dict]:
         )
         return None
     data.setdefault("id", session_id)
-    data.setdefault("messages", [])
+    if not isinstance(data.get("messages"), list):
+        data["messages"] = []
     return data
 
 
@@ -60,23 +79,14 @@ def save_session(notebook, session: Dict) -> None:
     _sessions_dir(notebook).mkdir(parents=True, exist_ok=True)
     path = _session_path(notebook, session["id"])
     _atomic_write_json(path, session)
+    # L36: keep a lightweight sidecar so listing sessions never has to
+    # deserialize full transcripts.
+    _atomic_write_json(_meta_path(notebook, session["id"]), _session_meta(session))
 
 
 def _atomic_write_json(path: Path, data: Dict) -> None:
     """Write *data* to *path* atomically (tmp file + rename)."""
-    import os
-    import tempfile
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_name, path)
-    except Exception:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
-        raise
+    atomic_write_json(path, data)
 
 
 def list_sessions(notebook) -> List[Dict]:
@@ -86,7 +96,7 @@ def list_sessions(notebook) -> List[Dict]:
         return []
     sessions: List[Dict] = []
     for entry in d.iterdir():
-        if entry.suffix != SESSION_EXT:
+        if entry.name.endswith(META_EXT) or entry.suffix != SESSION_EXT:
             continue
         sid = entry.name[: -len(SESSION_EXT)]
         data = load_session(notebook, sid)
@@ -94,6 +104,46 @@ def list_sessions(notebook) -> List[Dict]:
             sessions.append(data)
     sessions.sort(key=lambda s: s.get("updated", ""), reverse=True)
     return sessions
+
+
+def list_session_meta(notebook) -> List[Dict]:
+    """Return lightweight session summaries, newest first (L36).
+
+    Reads the small sidecar files written by :func:`save_session` instead of
+    deserializing every full transcript, so ``/sessions`` stays cheap with
+    many long sessions. Falls back to full deserialization only when a sidecar
+    is missing (sessions written by an older version).
+    """
+    d = _sessions_dir(notebook)
+    if not d.is_dir():
+        return []
+    metas: List[Dict] = []
+    for entry in d.iterdir():
+        if entry.name.endswith(META_EXT) or entry.suffix != SESSION_EXT:
+            continue
+        sid = entry.name[: -len(SESSION_EXT)]
+        meta_path = _meta_path(notebook, sid)
+        meta = _load_meta_file(meta_path)
+        if meta is None:
+            # Fallback for sessions written before the sidecar existed.
+            data = load_session(notebook, sid)
+            if data is None:
+                continue
+            meta = _session_meta(data)
+        metas.append(meta)
+    metas.sort(key=lambda m: m.get("updated", ""), reverse=True)
+    return metas
+
+
+def _load_meta_file(meta_path: Path) -> Optional[Dict]:
+    if not meta_path.exists():
+        return None
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    return meta if isinstance(meta, dict) and meta.get("id") else None
 
 
 def new_session(notebook, provider_id: str, model: str) -> Dict:
@@ -165,4 +215,8 @@ def trim_messages(messages: List[Dict], max_chars: int = 120_000) -> List[Dict]:
         while start < len(messages) - 1 and not valid_start(start):
             start += 1
 
-    return list(messages[start:])
+    result = list(messages[start:])
+    # If the sole survivor is not a valid start (e.g. lone tool message), drop it.
+    if len(result) == 1 and not valid_start(start):
+        return []
+    return result

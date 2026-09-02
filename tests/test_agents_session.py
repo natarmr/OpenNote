@@ -2,6 +2,7 @@ import pytest
 
 from opennote.agents.session import (
     append_messages,
+    list_session_meta,
     list_sessions,
     load_session,
     new_session,
@@ -131,3 +132,44 @@ def test_save_session_roundtrip(notebook):
     session["model"] = "other"
     save_session(notebook, session)
     assert load_session(notebook, session["id"])["model"] == "other"
+
+
+def test_list_session_meta_summaries_and_sidecar(notebook):
+    # L36: listing must read lightweight sidecars, not full transcripts.
+    a = new_session(notebook, "groq", "openai/gpt-oss-120b")
+    append_messages(notebook, a["id"], [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ])
+    b = new_session(notebook, "anthropic", "claude-sonnet-4-5")
+    metas = list_session_meta(notebook)
+    assert {m["id"] for m in metas} == {a["id"], b["id"]}
+    ma = next(m for m in metas if m["id"] == a["id"])
+    assert ma["model"] == "openai/gpt-oss-120b"
+    assert ma["provider_id"] == "groq"
+    assert ma["msg_count"] == 2
+    assert ma["updated"]
+    # Newest first (b was created after a was updated).
+    assert metas[0]["id"] == b["id"]
+
+
+def test_list_session_meta_missing_sidecar_falls_back_to_full(notebook):
+    # Sessions written by older versions have no sidecar; listing must still
+    # return them (falling back to full deserialization), and must not crash
+    # when the sidecar file is absent.
+    session = new_session(notebook, "groq", "m")
+    sid = session["id"]
+    meta_path = notebook.directory / "sessions" / f"{sid}.meta.json"
+    meta_path.unlink()
+    metas = list_session_meta(notebook)
+    assert [m["id"] for m in metas] == [sid]
+
+
+def test_list_session_meta_skips_corrupt_sidecar(notebook):
+    a = new_session(notebook, "groq", "m")
+    b = new_session(notebook, "groq", "m")
+    bad = notebook.directory / "sessions" / f"{a['id']}.meta.json"
+    bad.write_text("{not json", encoding="utf-8")
+    metas = list_session_meta(notebook)
+    ids = {m["id"] for m in metas}
+    assert ids == {a["id"], b["id"]}

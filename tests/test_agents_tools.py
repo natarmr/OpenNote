@@ -25,7 +25,7 @@ def _result(filename="a.pdf", content="alpha"):
 
 
 def test_schemas_have_both_tools():
-    assert set(TOOL_SCHEMAS) == {"search", "list_sources"}
+    assert set(TOOL_SCHEMAS) == {"search", "list_sources", "web_search", "read_page"}
     assert "query" in TOOL_SCHEMAS["search"]["parameters"]["required"]
     assert TOOL_SCHEMAS["search"]["parameters"]["properties"]["query"]["type"] == "string"
 
@@ -89,6 +89,31 @@ def test_execute_search_kwargs_none_missing_required():
 def test_execute_list_sources():
     retriever = FakeRetriever(sources=["a.pdf", "b.pdf"])
     assert execute_tool("list_sources", retriever, {}) == ["a.pdf", "b.pdf"]
+
+
+def test_execute_web_search_validates_args(monkeypatch):
+    calls = []
+
+    def fake_ws(query, top_k=5):
+        calls.append((query, top_k))
+        return [_result()]
+
+    import opennote.websearch as ws
+
+    monkeypatch.setattr(ws, "web_search", fake_ws)
+    out = execute_tool("web_search", FakeRetriever(), {"query": "q", "top_k": 3})
+    assert calls == [("q", 3)]
+    assert len(out) == 1
+
+
+def test_execute_web_search_rejects_bad_args(monkeypatch):
+    import opennote.websearch as ws
+
+    monkeypatch.setattr(ws, "web_search", lambda q, top_k=5: [])
+    with pytest.raises(ValueError, match="top_k"):
+        execute_tool("web_search", FakeRetriever(), {"query": "q", "top_k": 0})
+    with pytest.raises(ValueError, match="query"):
+        execute_tool("web_search", FakeRetriever(), {"query": "   "})
 
 
 def test_execute_missing_required_arg_raises():

@@ -6,6 +6,7 @@ auth land in later phases.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -16,7 +17,7 @@ import typer
 from opennote import __version__
 from opennote.auth.cli import auth_app
 from opennote.chat.ask import ask
-from opennote.chat.client import ChatError, LLMClient, default_provider, get_client
+from opennote.chat.client import ChatError, default_provider, get_client
 from opennote.ingest.pipeline import ingest as run_ingest
 from opennote.notebooks import Notebook, NotebookManager
 from opennote.retrieval.retriever import Retriever, render_results
@@ -46,7 +47,7 @@ logging.basicConfig(
 # LLM output can contain any Unicode; emit UTF-8 so no character is lost or
 # crashes the console (cp1252 defaults on Windows). Unencodable chars, if any,
 # are replaced rather than raised.
-for _stream in (sys.stdout, sys.stderr):
+for _stream in (sys.stdout, sys.stderr, sys.stdin):
     if hasattr(_stream, "reconfigure"):
         try:
             _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -183,10 +184,10 @@ def search(
     nb = _notebook(notebook)
     try:
         retriever = Retriever(nb, top_k=top_k)
+        results = retriever.search(query, source=source)
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
-    results = retriever.search(query, source=source)
     typer.echo(render_results(results))
 
 
@@ -278,9 +279,9 @@ def chat_cmd(
     )
 
     nb = _notebook(notebook)
-    pid = provider or default_provider()
 
     try:
+        pid = provider or default_provider()
         client = get_client(pid)
     except (ChatError, ValueError) as e:
         typer.echo(f"Error: {e}", err=True)
@@ -314,7 +315,7 @@ def chat_cmd(
     while True:
         try:
             user_input = input("\n> ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, UnicodeDecodeError):
             typer.echo("\nGoodbye!")
             break
 
@@ -343,11 +344,13 @@ def chat_cmd(
                 session = create_new_session(nb, client.provider_id, client.model)
                 typer.echo(f"Started new session {session['id'][:8]}…")
             elif cmd == "/sessions":
-                for s in list_sessions(nb):
+                from opennote.agents.session import list_session_meta
+
+                for s in list_session_meta(nb):
                     marker = "*" if s["id"] == session["id"] else " "
                     typer.echo(
                         f"  {marker} {s['id'][:8]}… model={s.get('model')} "
-                        f"msgs={len(s['messages'])} updated={s.get('updated', '')[:19]}"
+                        f"msgs={s.get('msg_count', 0)} updated={s.get('updated', '')[:19]}"
                     )
             elif cmd == "/sources":
                 try:
@@ -393,6 +396,77 @@ def chat_cmd(
         typer.echo(f"\n--- Answer (via {result.provider_id}:{result.model}) ---\n")
         typer.echo(result.answer)
         typer.echo()
+
+
+@app.command("local")
+def local_cmd(
+    command: str = typer.Argument(..., help="Command: add, list, use, remove"),
+    path: Optional[str] = typer.Argument(None, help="Path to GGUF model file (for `add`)"),
+    name: Optional[str] = typer.Argument(None, help="Model name (for `add`, auto-derived if omitted)"),
+    n_ctx: int = typer.Option(4096, "--n-ctx", help="Context window size"),
+    threads: Optional[int] = typer.Option(None, "--threads", help="Number of CPU threads"),
+) -> None:
+    """Manage local GGUF models.
+
+    ``opennote local add <path>`` registers a model file.
+    ``opennote local list`` shows registered models.
+    ``opennote local use <name>`` activates a model.
+    ``opennote local remove <name>`` unregisters a model.
+    """
+    from opennote.auth.local import add_model, list_models, remove_model, set_active, get_active, validate_name
+
+    home = None  # will use OPENNOTE_HOME or ~/.opennote
+
+    if command == "add":
+        if not path:
+            typer.echo("Usage: opennote local add <path-to-gguf> [name] [--n-ctx N] [--threads N]", err=True)
+            raise typer.Exit(1)
+        if name is None:
+            name = os.path.splitext(os.path.basename(path))[0]
+        if not validate_name(name):
+            typer.echo(f"Invalid model name '{name}'. Use only letters, digits, dash, dot, underscore.", err=True)
+            raise typer.Exit(1)
+        try:
+            add_model(home, name, path, n_ctx=n_ctx, threads=threads)
+            typer.echo(f"Model '{name}' registered.")
+        except (FileNotFoundError, ValueError) as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+
+    elif command == "list":
+        models = list_models(home)
+        if not models:
+            typer.echo("No local models registered.")
+            return
+        active = get_active(home)
+        active_name = active["name"] if active else None
+        for m in models:
+            marker = " *" if m["name"] == active_name else ""
+            typer.echo(
+                f"{marker} {m['name']}: {m['path']}  (n_ctx={m['n_ctx']}, threads={m.get('threads', 'auto')})"
+            )
+
+    elif command == "use":
+        if not name:
+            typer.echo("Usage: opennote local use <name>", err=True)
+            raise typer.Exit(1)
+        try:
+            set_active(home, name)
+            typer.echo(f"Model '{name}' is now active.")
+        except (KeyError, ValueError) as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
+
+    elif command == "remove":
+        if not name:
+            typer.echo("Usage: opennote local remove <name>", err=True)
+            raise typer.Exit(1)
+        try:
+            remove_model(home, name)
+            typer.echo(f"Model '{name}' unregistered.")
+        except KeyError as e:
+            typer.echo(str(e), err=True)
+            raise typer.Exit(1)
 
 
 @app.command("version")

@@ -45,11 +45,25 @@ def _pick_locator(meta: Dict[str, Any]) -> str:
         return f"§ {meta['heading']}"
     if meta.get("line_start"):
         return f"L{meta['line_start']}"
+    # Web results: URL hostname + optional page title (L48 — previously dead code).
+    if meta.get("url"):
+        from urllib.parse import urlparse
+
+        host = urlparse(meta["url"]).netloc or meta["url"]
+        title = meta.get("title") or ""
+        if title and title != host:
+            return f"{host}, \"{title}\""
+        return host
     return "loc. n/a"
 
 
 def _source_label(meta: Dict[str, Any]) -> str:
-    return meta.get("filename") or meta.get("source") or "unknown"
+    return (
+        meta.get("filename")
+        or meta.get("source")
+        or meta.get("url")
+        or "unknown"
+    )
 
 
 def citation_for(meta: Dict[str, Any]) -> Citation:

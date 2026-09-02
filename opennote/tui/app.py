@@ -16,17 +16,28 @@ Screen {
     background: $background;
 }
 
+ChatScreen {
+    align: center middle;
+}
+
 #transcript {
+    display: none;
     width: 100%;
     height: 1fr;
     padding: 1 2;
+    color: $text;
     scrollbar-gutter: stable;
+}
+
+ChatScreen.has-history #transcript {
+    display: block;
 }
 
 #prompt-bar {
     width: 100%;
     height: auto;
     padding: 0 2 0 2;
+    align-horizontal: center;
 }
 
 #prompt-box {
@@ -34,6 +45,12 @@ Screen {
     height: auto;
     padding: 1 2;
     background: $background-element;
+    width: 80;
+    max-width: 100%;
+}
+
+ChatScreen.has-history #prompt-box {
+    width: 100%;
 }
 
 #prompt-input {
@@ -48,6 +65,12 @@ Screen {
 #meta-row {
     height: 1;
     align-horizontal: left;
+    width: 80;
+    max-width: 100%;
+}
+
+ChatScreen.has-history #meta-row {
+    width: 100%;
 }
 
 #meta-sep {
@@ -65,6 +88,12 @@ Screen {
 #status-row {
     height: 1;
     align-horizontal: left;
+    width: 80;
+    max-width: 100%;
+}
+
+ChatScreen.has-history #status-row {
+    width: 100%;
 }
 
 #status-spinner {
@@ -131,8 +160,38 @@ Screen {
     margin-top: 1;
 }
 
-Screen {
-    background: $background;
+#welcome-logo {
+    width: auto;
+    height: auto;
+}
+
+#welcome-tip {
+    width: auto;
+    height: auto;
+    color: $text-muted;
+    margin-top: 1;
+}
+
+ChatScreen.has-history #welcome-logo,
+ChatScreen.has-history #welcome-tip {
+    display: none;
+}
+
+#footer-bar {
+    dock: bottom;
+    width: 100%;
+    height: 1;
+    padding: 0 2 1 2;
+}
+
+#footer-path {
+    color: $text-muted;
+}
+
+#footer-version {
+    color: $text-muted;
+    width: 1fr;
+    text-align: right;
 }
 """
 

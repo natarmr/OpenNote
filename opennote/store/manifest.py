@@ -17,15 +17,32 @@ class Manifest:
         if self.manifest_file.exists():
             try:
                 with open(self.manifest_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
+                    data = json.load(f)
+                    return data if isinstance(data, dict) else {}
+            except (json.JSONDecodeError, OSError) as exc:
+                import logging
+                logging.getLogger("opennote.store.manifest").warning(
+                    "Manifest '%s' corrupt/unreadable (%s); starting fresh.", self.manifest_file, exc
+                )
                 return {}
         return {}
 
     def save(self):
         self.manifest_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.manifest_file, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, indent=2)
+        import os
+        import tempfile
+        fd, tmp = tempfile.mkstemp(dir=self.manifest_file.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, indent=2)
+            os.replace(tmp, self.manifest_file)
+        except Exception:
+            if os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+            raise
 
     def is_indexed(self, source: str, file_hash: str) -> bool:
         return self.data.get(source) == file_hash

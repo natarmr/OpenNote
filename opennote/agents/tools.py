@@ -41,6 +41,31 @@ TOOL_SCHEMAS: Dict[str, dict] = {
             "required": [],
         },
     },
+    "web_search": {
+        "description": "Retrieve top-k chunks for a free-text query using Tavily web search.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query."},
+                "top_k": {
+                    "type": "integer",
+                    "description": "Number of chunks to return (default: 5).",
+                    "default": 5,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    "read_page": {
+        "description": "Fetch a web page URL and return its chunked text for detailed reading.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The http(s) URL to fetch."},
+            },
+            "required": ["url"],
+        },
+    },
 }
 
 
@@ -79,10 +104,49 @@ def _list_sources(retriever: Retriever) -> List[str]:
     return retriever.sources()
 
 
-# Mapping from tool name → (Retriever, kwargs) → List[SearchResult]
+def _web_search(
+    retriever: Retriever,
+    query: str,
+    top_k: Any = 5,
+) -> List[SearchResult]:
+    """Retrieve top‑k chunks for *query* via Tavily web search.
+
+    Returns SearchResult objects with metadata ``url``, ``title``, ``fetched_at``
+    so that existing citation validation (``[n]`` markers, Sources footer) works
+    unchanged.
+    """
+    # Mirror _search's argument validation (L45/L46).
+    try:
+        top_k = int(top_k) if top_k is not None else 5
+    except (TypeError, ValueError):
+        raise ValueError(f"top_k must be an integer, got {top_k!r}.")
+    if top_k < 1:
+        raise ValueError(f"top_k must be >= 1, got {top_k}.")
+    if top_k > 25:
+        raise ValueError(f"top_k must be <= 25, got {top_k}.")
+    if not query or not str(query).strip():
+        raise ValueError("web_search requires a non-empty 'query' string.")
+    # The retriever argument is unused (web search is not ChromaDB‑bound),
+    # but execute_tool always passes it as the first positional arg.
+    from opennote.websearch import web_search as _ws
+    return _ws(query, top_k=top_k)
+
+
+def _read_page(retriever: Retriever, url: str) -> List[SearchResult]:
+    """Fetch *url* and return chunked SearchResults."""
+    if not url or not str(url).strip():
+        raise ValueError("read_page requires a non-empty 'url' string.")
+    from opennote.websearch import read_page as _rp
+
+    return _rp(url)
+
+
+# Mapping from tool name → function → List[SearchResult]
 _TOOL_DISPATCH: Dict[str, Any] = {
     "search": _search,
     "list_sources": _list_sources,
+    "web_search": _web_search,
+    "read_page": _read_page,
 }
 
 

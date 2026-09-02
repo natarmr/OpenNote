@@ -342,22 +342,46 @@ class AnthropicClient(LLMClient):
 def default_provider() -> str:
     """First configured provider with a key and a selected model (alphabetical)."""
     config = AuthConfig()
+    from opennote.auth.local import get_active as _ga
+
+    local_active = bool(_ga())
     candidates = [
         pid
         for pid in sorted(config.providers())
         if resolve_key(pid) and config.get(pid) and config.get(pid).model
     ]
-    if not candidates:
-        raise ChatError(
-            "No provider is configured with a key and a model. "
-            "Run 'opennote auth add <provider>' first."
-        )
-    return candidates[0]
+    if candidates:
+        return candidates[0]
+    if local_active:
+        return "local"
+    raise ChatError(
+        "No provider is configured with a key and a model. "
+        "Run 'opennote auth add <provider>' first."
+    )
 
 
 def get_client(provider_id: str) -> LLMClient:
     """Build the client for ``provider_id`` using keychain/env key + stored model."""
     provider = get_provider(provider_id)
+    if provider.flavor == "local":
+        # Local GGUF model — no API key required; model path stored in local config.
+        from opennote.auth.local import get_active as _get_active
+
+        active = _get_active()
+        if not active:
+            raise ChatError(
+                "No local model configured. "
+                "Run ``opennote local add <path-to-gguf>`` to register one, "
+                "then ``opennote local use <name>`` to activate it."
+            )
+        from opennote.chat.local import LocalLlamaClient  # noqa: E501 (cyclic import guard)
+
+        return LocalLlamaClient(
+            model_name=active["name"],
+            model_path=active["path"],
+            n_ctx=active.get("n_ctx", 4096),
+            threads=active.get("threads"),
+        )
     api_key = resolve_key(provider_id)
     if not api_key:
         raise ChatError(

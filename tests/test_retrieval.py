@@ -150,3 +150,122 @@ def test_load_golden_parses_tsv(tmp_path):
     assert golden[0].expected_source == "a.pdf"
     assert golden[0].expected_pages == (4, 5)
     assert golden[1].expected_pages is None
+
+
+# ---- BM25 + hybrid retrieval (Phase G) ----
+
+from opennote.retrieval.bm25 import Bm25Retriever, hybrid_search
+
+
+def test_bm25_search_returns_ranked_results(stub_embedder, notebook_manager):
+    nb = notebook_manager.create("nb")
+    mgr = VectorStoreManager("documents", nb.store_dir)
+    mgr.add_chunks(
+        [
+            _chunk("The cat sat on the mat", "a.pdf"),
+            _chunk("Dogs chase the cat in the park", "b.pdf"),
+            _chunk("Stock market reports for investors", "c.pdf"),
+        ]
+    )
+    bm25 = Bm25Retriever(nb)
+    results = bm25.search("cat", top_k=3)
+    assert len(results) == 2  # only the two cat documents match
+    assert {r.metadata["filename"] for r in results} == {"a.pdf", "b.pdf"}
+    assert all(r.similarity > 0.0 for r in results)
+    assert all(r.id for r in results)  # chunk_id copied from chroma (L76)
+
+
+def test_bm25_empty_corpus_no_crash(notebook_manager):
+    # A notebook with a store dir but no chunks must not ZeroDivide (L72).
+    nb = notebook_manager.create("nb")
+    bm25 = Bm25Retriever(nb)
+    assert bm25.search("anything") == []
+
+
+def test_bm25_source_filter(stub_embedder, notebook_manager):
+    nb = notebook_manager.create("nb")
+    mgr = VectorStoreManager("documents", nb.store_dir)
+    mgr.add_chunks(
+        [_chunk("alpha content", "a.pdf"), _chunk("beta content", "b.pdf")]
+    )
+    bm25 = Bm25Retriever(nb)
+    results = bm25.search("content", top_k=5, source="a.pdf")
+    assert results
+    assert all(r.metadata["filename"] == "a.pdf" for r in results)
+
+
+def test_bm25_multiple_chunks_same_source_survive(stub_embedder, notebook_manager):
+    # Chunks are merged per-chunk, not per-file (L71).
+    nb = notebook_manager.create("nb")
+    mgr = VectorStoreManager("documents", nb.store_dir)
+    mgr.add_chunks(
+        [
+            _chunk("alpha first paragraph", "a.pdf"),
+            _chunk("alpha second paragraph with more text", "a.pdf"),
+            _chunk("beta unrelated content", "b.pdf"),
+        ]
+    )
+    bm25 = Bm25Retriever(nb)
+    results = bm25.search("alpha", top_k=5)
+    alpha_chunks = [r for r in results if r.metadata["filename"] == "a.pdf"]
+    assert len(alpha_chunks) == 2  # both chunks of a.pdf present
+
+
+def test_hybrid_no_recursion(stub_embedder, notebook_manager):
+    # The L68 recursion: hybrid path must not re-enter search() with use_bm25.
+    nb = notebook_manager.create("nb")
+    mgr = VectorStoreManager("documents", nb.store_dir)
+    mgr.add_chunks(
+        [
+            _chunk("alpha content", "a.pdf"),
+            _chunk("beta content", "b.pdf"),
+        ]
+    )
+    retriever = Retriever(nb, top_k=5, use_bm25=True, bm25_alpha=0.5)
+    results = retriever.search("alpha")
+    assert results
+    assert all(r.metadata["filename"] in ("a.pdf", "b.pdf") for r in results)
+
+
+def test_hybrid_source_filter_forwarded(stub_embedder, notebook_manager):
+    # The L74 source-filter must survive the hybrid path.
+    nb = notebook_manager.create("nb")
+    mgr = VectorStoreManager("documents", nb.store_dir)
+    mgr.add_chunks(
+        [
+            _chunk("alpha content", "a.pdf"),
+            _chunk("beta content", "b.pdf"),
+        ]
+    )
+    retriever = Retriever(nb, top_k=5, use_bm25=True)
+    filtered = retriever.search("alpha", source="a.pdf")
+    assert filtered
+    assert all(r.metadata["filename"] == "a.pdf" for r in filtered)
+
+
+def test_hybrid_merge_pure_function():
+    # hybrid_search is now a pure merge of pre-computed results (L68/L71).
+    a = SearchResult(
+        content="x",
+        metadata={"chunk_id": "a-1", "filename": "a.pdf"},
+        similarity=0.9,
+        citation=citation_for({"filename": "a.pdf"}),
+    )
+    b = SearchResult(
+        content="y",
+        metadata={"chunk_id": "b-1", "filename": "b.pdf"},
+        similarity=0.2,
+        citation=citation_for({"filename": "b.pdf"}),
+    )
+    merged = hybrid_search([a], [b], top_k=5, alpha=0.5)
+    assert {r.metadata["chunk_id"] for r in merged} == {"a-1", "b-1"}
+    assert merged[0].metadata["chunk_id"] == "a-1"  # higher combined score
+
+
+def test_bm25_disabled_no_attribute_error(stub_embedder, notebook_manager):
+    nb = notebook_manager.create("nb")
+    mgr = VectorStoreManager("documents", nb.store_dir)
+    mgr.add_chunks([_chunk("alpha content", "a.pdf")])
+    retriever = Retriever(nb, top_k=5, use_bm25=False)
+    retriever.use_bm25 = True  # flipped at runtime (L76 latent AttributeError)
+    assert retriever.search("alpha")  # must not raise AttributeError

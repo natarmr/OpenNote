@@ -119,6 +119,9 @@ async def test_tab_cycles_modes(tmp_path):
         assert bar.mode == "search"
         await pilot.press("tab")
         await pilot.pause()
+        assert bar.mode == "studio"
+        await pilot.press("tab")
+        await pilot.pause()
         assert bar.mode == "ask"
 
 
@@ -129,11 +132,21 @@ async def test_slash_help_opens_dialog(tmp_path):
         await pilot.press("slash", "h", "e", "l", "p")
         await pilot.press("enter")
         await pilot.pause()
-        from opennote.tui.dialogs import InfoDialog
+        from textual.widgets import Button
 
-        assert isinstance(app.screen, InfoDialog)
+        from opennote.tui.dialogs import HelpDialog
+        from opennote.tui.screens.chat import ChatScreen
+
+        assert isinstance(app.screen, HelpDialog)
         body = app.screen.query_one("#dialog-body")
-        assert "Slash commands" in body.render().plain
+        assert (
+            "Press ctrl+p to see all available actions and commands in any context."
+            in body.render().plain
+        )
+        assert app.screen.query_one("#help-okay", Button) is not None
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
 
 
 async def test_ask_submit_runs_agent_and_shows_answer(tmp_path):
@@ -248,11 +261,21 @@ async def test_slash_popup_enter_selects_highlighted(tmp_path):
         assert [c.name for c in popup.commands] == ["help"]
         await pilot.press("enter")
         await pilot.pause()
-        from opennote.tui.dialogs import InfoDialog
+        from textual.widgets import Button
 
-        assert isinstance(app.screen, InfoDialog)
+        from opennote.tui.dialogs import HelpDialog
+        from opennote.tui.screens.chat import ChatScreen
+
+        assert isinstance(app.screen, HelpDialog)
         body = app.screen.query_one("#dialog-body")
-        assert "Slash commands" in body.render().plain
+        assert (
+            "Press ctrl+p to see all available actions and commands in any context."
+            in body.render().plain
+        )
+        assert app.screen.query_one("#help-okay", Button) is not None
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
 
 
 async def test_slash_popup_enter_with_multiple_matches(tmp_path):
@@ -345,14 +368,52 @@ async def test_ctrl_p_opens_palette(tmp_path):
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        from opennote.tui.dialogs import ItemListDialog
+        from opennote.tui.dialogs import CommandPalette
 
-        assert isinstance(app.screen, ItemListDialog)
+        assert isinstance(app.screen, CommandPalette)
         await pilot.press("escape")
         await pilot.pause()
         from opennote.tui.screens.chat import ChatScreen
 
         assert isinstance(app.screen, ChatScreen)
+
+
+async def test_palette_no_matches_shows_single_placeholder(tmp_path):
+    app = await _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        from opennote.tui.dialogs import CommandPalette
+
+        assert isinstance(app.screen, CommandPalette)
+        await pilot.press(*"zzzzzz")
+        await pilot.pause()
+        ol = app.screen.query_one("#palette-options")
+        assert len(ol.options) == 1  # single placeholder row, not per-character
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_palette_filter_runs_studio_topic_dialog(tmp_path):
+    app = await _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        from opennote.tui.dialogs import CommandPalette, InputDialog
+
+        assert isinstance(app.screen, CommandPalette)
+        await pilot.press(*"study guide")
+        await pilot.pause()
+        await pilot.press("down")  # skip the section header, highlight the entry
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        # The Study Guide palette entry asks for a topic via an InputDialog.
+        assert isinstance(app.screen, InputDialog)
+        await pilot.press("escape")
+        await pilot.pause()
 
 
 async def test_theme_command_switches_palette(tmp_path):
@@ -497,6 +558,7 @@ async def test_connect_flow(tmp_path, monkeypatch):
     from opennote.auth.config import AuthConfig as RealAuthConfig
     from opennote.tui.screens import chat as chat_mod
     from opennote.auth import keychain as kc
+    from opennote.auth.validate import ValidationResult
 
     monkeypatch.setattr(
         "opennote.auth.config.AuthConfig",
@@ -504,6 +566,10 @@ async def test_connect_flow(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(kc, "set_key", lambda pid, key: None)
     monkeypatch.setattr(kc, "resolve_key", lambda pid: None)
+    monkeypatch.setattr(
+        "opennote.auth.validate.validate_key",
+        lambda provider, api_key, **kw: ValidationResult.success(["m1", "m2"]),
+    )
     client = ScriptedClient([], provider_id="groq", model="llama-3.3-70b-versatile")
     monkeypatch.setattr(chat_mod, "get_client", lambda pid: client)
     app = await _make_app(tmp_path)
@@ -523,9 +589,12 @@ async def test_connect_flow(tmp_path, monkeypatch):
         await pilot.press(*"sk-test")
         await pilot.press("enter")
         await pilot.pause()
+        # The just-entered key is passed straight to _open_connect_model, which
+        # validates it and opens the live-model picker.
         assert isinstance(app.screen, ItemListDialog)
-        await pilot.press("enter")
+        await pilot.press("enter")  # pick the first ranked model ("m1")
         await pilot.pause()
+        assert isinstance(app.screen, chat_mod.ChatScreen)
         assert app.screen.session["provider_id"] == "groq"
         assert app.screen.session["model"] == client.model
         assert app.screen._client is client

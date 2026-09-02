@@ -21,6 +21,7 @@ class Provider:
     console_url: str
     preferred_models: Tuple[str, ...] = ()
     excluded_models: Tuple[str, ...] = ()
+    tts_models: Tuple[str, ...] = ()
 
 
 PROVIDERS: List[Provider] = [
@@ -58,6 +59,9 @@ PROVIDERS: List[Provider] = [
             "gpt-4.1",
             "gpt-4o",
             "gpt-4o-mini",
+        ),
+        tts_models=(
+            "gpt-4o-mini-tts",
         ),
     ),
     Provider(
@@ -118,6 +122,10 @@ PROVIDERS: List[Provider] = [
             "canopylabs/orpheus-arabic-saudi",
             "allam-2-7b",
         ),
+        tts_models=(
+            "canopylabs/orpheus-v1-english",
+            "canopylabs/orpheus-arabic-saudi",
+        ),
     ),
     Provider(
         id="google",
@@ -134,6 +142,9 @@ PROVIDERS: List[Provider] = [
             "gemini-2.5-flash",
             "gemini-3-pro",
             "gemini-2.5-pro",
+        ),
+        tts_models=(
+            "gemini-2.5-flash-preview-tts",
         ),
     ),
 ]

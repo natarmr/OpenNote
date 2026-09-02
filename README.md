@@ -85,6 +85,28 @@ opennote auth verify               # re-validate stored keys
 opennote auth remove groq
 ```
 
+### Local GGUF (offline, no API key)
+
+```bash
+# 1. Install optional local backend (llama-cpp-python; CPU wheels for 3.10-3.12, 3.13 needs newer wheel)
+py -m pip install -e ".[local]"          # or: pip install llama-cpp-python
+
+# 2. Register a model file (GGUF)
+opennote local add D:\models\qwen2.5-7b-q4.gguf my-qwen --n-ctx 4096
+opennote local list                       # shows registered models, * = active
+opennote local use my-qwen                # set active
+
+# 3. Chat via local model (no network)
+opennote chat --provider local            # or: opennote ask "..." --provider local
+# TUI: /model local  or palette → Switch Provider → local
+
+# How it works
+# - opennote/chat/local.py:LocalLlamaClient implements LLMClient via llama_cpp.Llama
+# - Module cache _llama_cache keyed by (path, n_ctx, threads) → one load per process
+# - History trimmed via trim_messages to n_ctx*3 chars; tool calls use JSON {"tool":..}
+# - Env: LLAMA_N_GPU_LAYERS (0), LLAMA_CHAT_FORMAT (default) tune GPU/offload
+```
+
 Keys stored in the OS keychain when available, else read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, `CEREBRAS_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`. Validation requires network; `--no-verify` stores without checking.
 
 ### Grounded Q&A

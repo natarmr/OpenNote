@@ -50,6 +50,18 @@ class StubScreen:
     def _set_mode_search(self, _arg=""):
         self.calls.append("search")
 
+    def _enter_studio(self, _arg=""):
+        self.calls.append("studio")
+
+    def _start_studio_command(self, kind):
+        def handler(arg=""):
+            self.calls.append(f"studio:{kind}")
+
+        return handler
+
+    def _open_artifact(self, _arg=""):
+        self.calls.append("open")
+
     def _switch_theme(self, _arg=""):
         self.calls.append("theme")
 
@@ -97,7 +109,7 @@ def test_lookup_missing_returns_none():
 def test_matches_prefix_filters_by_name():
     cmds = make_commands(StubScreen())
     assert set(c.name for c in matches_prefix("se", cmds)) == {"search", "sessions"}
-    assert [c.name for c in matches_prefix("/m", cmds)] == ["model"]
+    assert set(c.name for c in matches_prefix("/m", cmds)) == {"model", "mindmap"}
     assert matches_prefix("zz", cmds) == []
 
 
@@ -123,6 +135,35 @@ def test_u4_commands_registered():
     assert {"undo", "details"} <= names
     assert lookup("/undo", cmds).name == "undo"
     assert lookup("/details", cmds).name == "details"
+
+
+def test_studio_commands_registered():
+    cmds = make_commands(StubScreen())
+    names = {c.name for c in cmds}
+    expected = {
+        "studio",
+        "mindmap",
+        "study",
+        "faq",
+        "briefing",
+        "timeline",
+        "suggest",
+        "audio",
+        "video",
+        "open",
+    }
+    assert expected <= names
+    assert lookup("/mindmap", cmds).arg_hint == "<topic>"
+    assert lookup("/audio", cmds).arg_hint == "<text>"
+
+
+def test_studio_command_handlers_dispatch():
+    screen = StubScreen()
+    cmds = make_commands(screen)
+    lookup("mindmap", cmds).handler("Space travel")
+    lookup("faq", cmds).handler("Quantum physics")
+    assert "studio:mindmap" in screen.calls
+    assert "studio:faq" in screen.calls
 
 
 def test_command_handlers_bound():

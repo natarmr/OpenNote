@@ -16,7 +16,9 @@ class ScriptedClient:
         self.sent = []
 
     def chat(self, messages, tools=None, system=None, max_tokens=1024):
-        self.sent.append({"messages": list(messages), "tools": tools, "system": system})
+        self.sent.append(
+            {"messages": list(messages), "tools": tools, "system": system, "max_tokens": max_tokens}
+        )
         return self._responses.pop(0)
 
 
@@ -53,6 +55,12 @@ def test_direct_answer_no_tools():
     assert out.result.sources == []
     assert out.result.provider_id == "groq"
     assert len(client.sent) == 1
+
+
+def test_max_tokens_honored():
+    client = ScriptedClient([ChatResponse(content="Short.")])
+    agent_turn(StubNotebook(), "q", client=client, retriever=FakeRetriever(), max_tokens=512)
+    assert client.sent[0]["max_tokens"] == 512
 
 
 def test_tool_call_then_answer():
@@ -143,6 +151,9 @@ def test_tools_and_system_sent():
     assert sent["tools"] is not None
     assert "search" in sent["tools"]
     assert sent["system"] and "ONLY" in sent["system"]
+    # L44: the capabilities line must be interpolated, not sent literally.
+    assert "{capabilities_line}" not in sent["system"]
+    assert "Your capabilities:" in sent["system"]
 
 
 def test_provider_rejection_corrects_and_retries():
@@ -284,3 +295,70 @@ def test_on_round_reports_progress():
         on_round=lambda used, total: rounds.append((used, total)),
     )
     assert rounds == [(1, 5), (2, 5)]
+
+
+# --- L49: empty answer vs exhausted rounds ----------------------------------
+
+
+def test_empty_model_reply_triggers_corrective_nudge():
+    client = ScriptedClient(
+        [
+            ChatResponse(content=""),  # empty answer, no tool calls
+            ChatResponse(content="Real answer [1]."),
+        ]
+    )
+    out = agent_turn(StubNotebook(), "q", client=client, retriever=FakeRetriever(results=[]))
+    assert out.result.answer == "Real answer [1]."
+    # The corrective nudge must have been inserted between the two turns.
+    assert "empty" in client.sent[1]["messages"][-1]["content"]
+
+
+def test_empty_reply_through_all_rounds_does_not_claim_exhaustion():
+    client = ScriptedClient(
+        [ChatResponse(content="") for _ in range(5)] + [ChatResponse(content="late")]
+    )
+    out = agent_turn(StubNotebook(), "q", client=client, retriever=FakeRetriever(results=[]))
+    assert "ran out of tool rounds" not in out.result.answer
+
+
+# --- L50: web content wrapped in untrusted delimiters -----------------------
+
+
+def test_web_search_results_wrapped_in_untrusted_delimiters(monkeypatch):
+    web_meta = {"url": "https://x.dev/page", "title": "X", "filename": "https://x.dev/page"}
+    client = ScriptedClient(
+        [
+            ChatResponse(
+                content="",
+                tool_calls=[ToolCall(id="t", name="web_search", arguments={"query": "q"})],
+            ),
+            ChatResponse(content="done [1]."),
+        ]
+    )
+    retriever = FakeRetriever()
+    import opennote.websearch as ws
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test")
+    monkeypatch.setattr(
+        ws,
+        "web_search",
+        lambda query, top_k=5: [
+            SearchResult(
+                content="web content",
+                metadata=web_meta,
+                similarity=1.0,
+                citation=citation_for(web_meta),
+            )
+        ],
+    )
+    # Rebuild capabilities so web_search is advertised (env key now present).
+    from opennote.capabilities import set_cached
+
+    set_cached(None)
+    try:
+        agent_turn(StubNotebook(), "q", client=client, retriever=retriever)
+    finally:
+        set_cached(None)
+    tool_msg = [m for m in client.sent[-1]["messages"] if m.get("role") == "tool"][-1]
+    assert "<untrusted-content>" in tool_msg["content"]
+    assert "</untrusted-content>" in tool_msg["content"]

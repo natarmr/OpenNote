@@ -31,6 +31,11 @@ def auth_add(
     except ValueError as e:
         _print_error(str(e))
 
+    if provider_id == "local":
+        _print_error(
+            "Local models don't use API keys.  Run ``opennote local add <path>`` instead."
+        )
+
     existing = resolve_key(provider.id)
     if existing:
         typer.echo(f"Note: {provider.label} is already configured — overwriting.")

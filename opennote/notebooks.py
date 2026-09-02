@@ -66,6 +66,10 @@ class Notebook:
         return self.directory / "chroma"
 
     @property
+    def artifacts_dir(self) -> Path:
+        return self.directory / "artifacts"
+
+    @property
     def meta_file(self) -> Path:
         return self.directory / "notebook.json"
 
@@ -88,19 +92,9 @@ class Notebook:
         )
 
     def save(self):
-        import os
-        import tempfile
+        from opennote.fsutil import atomic_write_json
 
-        self.directory.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(dir=self.directory, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(self.to_dict(), f, indent=2)
-            os.replace(tmp_name, self.meta_file)
-        except Exception:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
-            raise
+        atomic_write_json(self.meta_file, self.to_dict())
 
 
 class NotebookManager:

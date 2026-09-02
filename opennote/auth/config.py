@@ -8,17 +8,17 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
+
+from opennote.fsutil import atomic_write_json, now_iso
 
 AUTH_CONFIG_NAME = "auth.json"
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return now_iso()
 
 
 @dataclass
@@ -86,20 +86,10 @@ class AuthConfig:
                 self._providers[pid] = ProviderSettings.from_dict(data)
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(dir=self.path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(
-                    {pid: s.to_dict() for pid, s in sorted(self._providers.items())},
-                    f,
-                    indent=2,
-                )
-            os.replace(tmp_name, self.path)
-        except Exception:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
-            raise
+        atomic_write_json(
+            self.path,
+            {pid: s.to_dict() for pid, s in sorted(self._providers.items())},
+        )
 
     def providers(self) -> Dict[str, ProviderSettings]:
         return dict(self._providers)

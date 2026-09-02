@@ -21,16 +21,12 @@ ChatScreen {
 }
 
 #transcript {
-    display: none;
+    display: block;
     width: 100%;
     height: 1fr;
     padding: 1 2;
     color: $text;
     scrollbar-gutter: stable;
-}
-
-ChatScreen.has-history #transcript {
-    display: block;
 }
 
 #prompt-bar {

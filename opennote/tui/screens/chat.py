@@ -180,6 +180,21 @@ class ChatScreen(Screen):
 
     # -- setup -------------------------------------------------------------
     def _resolve_notebook(self) -> None:
+        # Fresh directory -> fresh notebook: derive name from cwd when default
+        if self.notebook_name == "default":
+            try:
+                from pathlib import Path as _P
+                from opennote.notebooks import validate_notebook_name as _v
+
+                cand = _P.cwd().name.strip()
+                if cand:
+                    try:
+                        _v(cand)
+                        self.notebook_name = cand
+                    except ValueError:
+                        pass
+            except Exception:
+                pass
         try:
             self.notebook = self._manager.get(self.notebook_name)
         except (KeyError, ValueError):
@@ -206,12 +221,10 @@ class ChatScreen(Screen):
     def _resolve_session(self) -> None:
         if self.notebook is None:
             return
-        sessions = list_sessions(self.notebook)
-        self.session = sessions[0] if sessions else None
-        if self.session is None:
-            pid = self._client.provider_id if self._client else ""
-            model = self._client.model if self._client else ""
-            self.session = new_session(self.notebook, pid, model)
+        # Surgical: bare `opennote` always starts fresh session (no auto-resume)
+        pid = self._client.provider_id if self._client else ""
+        model = self._client.model if self._client else ""
+        self.session = new_session(self.notebook, pid, model)
         self._sync_meta()
 
     def _sync_meta(self) -> None:

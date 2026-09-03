@@ -179,3 +179,72 @@ app. Wave 6 (L85-L93) is the Ctrl+P palette `OptionList` rewrite and the
 `.meta.json` files, and L21 now has a direct test (`test_max_tokens_honored`).
 Also updated `test_schemas_have_both_tools` to expect
 `{"search","list_sources","web_search"}`.
+
+## Wave 8 — Global install (ramratan.in) — HIGH / externally visible
+
+`install` is served at `https://ramratan.in/install` (200 OK, Cloudflare) but the
+tarball it `pip install`s (`https://ramratan.in/opennote-0.1.0.tar.gz`) 404s.
+On Windows PowerShell 5.1 `curl` is an alias for `Invoke-WebRequest`, so the
+documented `curl -fsSL … | bash` never downloads. Both are fixed in Wave 8
+without adding load/latency to the origin (GitHub fallback, no tarball hosting).
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| I01 | HIGH | `install:17` + hosting | Tarball URL 404 — `pip install https://ramratan.in/opennote-0.1.0.tar.gz#egg=opennote` always fails | **fixed** | Map to PyPI (`pip install opennote`) with GitHub tarball fallback via PEP 508 `opennote @ https://github.com/natarmr/OpenNote/archive/refs/heads/main.tar.gz`; drop `#egg` | `curl.exe -I` 200/404 probes; local `bash install` dry-run |
+| I02 | HIGH | `install:3` docs | Windows `curl` alias trap — `curl -fsSL` on PS 5.1 errors before download | **fixed** | Docs show `curl.exe -fsSL … \| bash` + `iwr -useb https://ramratan.in/install.ps1 \| iex`; add `install.ps1` (PowerShell-native, `py -m pip`) | `Get-Command curl` alias check |
+| I03 | MED | `install:9,17` | Version check uses `python3` then bare `pip` — misses `python`/`py` on Windows and may pick wrong pip; `--user` installs not on PATH so `command -v opennote` false-negatives | **fixed** | Resolve `python3`/`python`/`py`, use `"$PYTHON_BIN" -m pip`, verify via `"$PYTHON_BIN" -m opennote --help` | — |
+| I04 | LOW | `install:17` | Deprecated `#egg=opennote` fragment; no hash pinning | **fixed** | PEP 508 direct reference, no fragment | — |
+| I05 | LOW | `install:16` | Emoji mojibake when file read as Windows-1252 (`📦` → `dY�`) | **fixed** | Keep file UTF-8, ASCII fallback in echo for strict consoles | `cat -Raw` check |
+
+## Wave 9–11 — Skills / Plugins / Agents audit (current session) — latency-safe
+
+Audit covered `opennote/skills/` (parse, discover, registry), `opennote/plugins/`
+(loader, builtin/supermemory), `opennote/agents/` (defs, tools, loop), `opennote/capabilities.py`,
+`opennote/cli.py` (new commands), `opennote/tui/commands.py` + `screens/chat.py` new methods,
+`pyproject.toml`, plus repo-wide `ast` import scan and `git` hygiene. All HIGH fixed in Wave 9,
+MED perf/redundancy in Wave 10, LOW hygiene in Wave 11. **Website/latency constraint:** walk helpers
+now stop at `.git` (3 vs 30 ancestors, shared `walk_worktree_roots` in `fsutil.py`), per-turn
+registries are built once and reused in `ToolContext` (no per-tool re-discovery), capability probe
+remains lazy (no global cache that hides `TAVILY_API_KEY` changes in tests).
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L100 | HIGH | `agents/tools.py:110` + `agents/loop.py:369` | `ctx._subagent_retrieved` via `setattr`/`hasattr` on a dataclass without the field (hidden `type: ignore`) | **fixed** | Declare `subagent_retrieved: List[SearchResult] = field(...)` + `depth: int = 0` on `ToolContext`; merge via `ctx.subagent_retrieved` directly | `test_task_subagent_retrieved` (implicit via loop) |
+| L101 | HIGH | `agents/tools.py:388` | `task` recursion unbounded — subagent re-advertises `task`, model can nest `task→task→…` to `RecursionError` / cost blow-up | **fixed** | `_MAX_TASK_DEPTH = 1` on `ToolContext.depth`; hide `task` schema when `depth >= 1`; nested `agent_turn(..., _depth=depth+1)` | — |
+| L102 | HIGH | `plugins/builtin/supermemory.py:138` | Dead `try: pass / except: pass  # notebook-ish context` placeholder | **fixed** | Delete block | — |
+| L103 | MED | `skills/parse.py:24` + `agents/defs.py:54` | BOM (`\ufeff---`) fails `startswith("---")`; delimiter `"\n---"` not line-anchored and misses `\r\n---` / `--- ` | **fixed** | Anchored regex `r"\A\ufeff?---[ \t]*\r?\n"` + `r"\r?\n---[ \t]*\r?\n"` for close; strip BOM | — |
+| L104 | MED | `skills/discover.py:18` + `agents/defs.py:115` + `plugins/loader.py:49` | Walk-up to FS root (30 ancestors) not stopped at `.git` — scans `C:\skills` etc., privacy/perf | **fixed** | Shared `fsutil.walk_worktree_roots()` (stops at `.git`), dedupe on `resolve()` | — |
+| L105 | MED | `plugins/builtin/supermemory.py:60,136` | Search scoped by `opennote-{nb.name}` but store under generic `opennote` — writes never found by scoped reads | **fixed** | Shared `_container_tag_for(ctx)`; store uses same scoped tag (with `result.notebook.name` fallback) | — |
+| L106 | MED | `plugins/builtin/supermemory.py:74` | `data.get("results") or …` — `[]` falsy, valid empty result falls through to next key | **fixed** | Presence check `if "results" in data` not truthiness | — |
+| L107 | MED | `plugins/builtin/supermemory.py:18` | `_SUPERMEMORY_API_BASE` evaluated at import time, stale after env change | **fixed** | Read at call time via `_api_base()` | — |
+| L108 | MED | `capabilities.py:60` + `agents/loop.py:161` | `_probe()` heavy FS walks on first call, no caching | **fixed** | Walk helper + ToolContext reuse; probe stays lazy (no global auto-cache that hides env changes in tests); `clear_cached()` helper added | latency: 344 tests ~86s (unchanged) |
+| L109 | MED | `plugins/loader.py:117` | `hash()` randomized per process → non-deterministic, 100k collision | **fixed** | `hashlib.sha1(...).hexdigest()[:8]` via `_stable_hash` | — |
+| L110 | MED | `skills/discover.py:88` + `agents/defs.py:142` + `plugins/loader.py:73` | Dedupe `str(p)` not resolved → symlink duplicates; `rp` computed unused | **fixed** | Dedupe on `p.resolve()` (try/except), shared helper | — |
+| L111 | MED | `agents/tools.py:472` + `agents/loop.py:205` | Per-tool re-discovery: `execute_tool` called `_get_dynamic_schemas` per invocation (3 walks × N) | **fixed** | Loop discovers once per turn, `ToolContext` carries registries; `_get_dynamic_schemas` pure (no lazy rediscover when already set) | — |
+| L112 | MED | `agents/tools.py:472` | `_get_dynamic_schemas` mutates input `ctx.skill_registry = reg` | **fixed** | Stop mutating; loop populates `ToolContext` directly | — |
+| L113 | MED | `plugins/loader.py:246` | Builtins appended after file plugins — builtin `memory_search` could shadow user plugin | **fixed** | Load builtins first (lowest priority; user plugins override) | — |
+| L114 | MED | `capabilities.py:102` + `agents/loop.py:237` | `plugins_loaded` stored tool names (`memory_search`) not plugin names, label misleading | **fixed** | Store `h._name` (plugin names); UI shows `plugins: supermemory` | — |
+| L115 | MED | `tui/screens/chat.py:809` + `cli.py:432` | `PluginContext(logger=None)` → `ctx.logger.info()` `AttributeError` (silently swallowed) | **fixed** | `PluginContext.__post_init__` defaults to `logging.getLogger("opennote.plugins")` | — |
+| L116 | MED | `agents/tools.py:294` | `OPENNOTE_ALLOW_SKILL_SCRIPTS` check `lower()` without `strip()` → `" 1 "` fails vs `_env_bool` which strips | **fixed** | `strip().lower()` everywhere | — |
+| L117 | MED | `cli.py:410` | Chat REPL slash handlers duplicate typer logic with temp aliases `SR2/_PC/_PL/AR2/AR3` | **open** | Extract shared helpers (deferred — functional, not latency) | — |
+| L118 | MED | `tui/screens/chat.py:776` | TUI registry calls on UI thread (blocks Textual) | **open** | Make `@work(thread=True)` (deferred) | — |
+| L119 | LOW | `agents/tools.py:18` | `field` imported never used (now used via `subagent_retrieved`) — **became fixed by L100** | **fixed** | — | — |
+| L120 | LOW | `agents/tools.py:115` | `ToolContext.artifacts_dir` declared never read | **open** | Wire or remove (low, no latency) | — |
+| L121 | LOW | `skills/discover.py:5` | `import os` unused | **fixed** | Removed | — |
+| L122 | LOW | `plugins/loader.py:5` | `import importlib` unused | **fixed** | `import hashlib` + `importlib.metadata/util` only | — |
+| L123 | LOW | `skills/registry.py:50` | `rglob("*")` follows symlinks → can escape / loop; 200 cap before sort arbitrary | **fixed** | Skip `is_symlink()`, collect then `sorted()[:200]` | — |
+| L124 | LOW | `plugins/builtin/supermemory.py:71,160` | Failures logged at `debug` invisible | **fixed** | Promote to `warning` | — |
+| L125 | LOW | `agents/loop.py:230` | Capability line duplicates `skills (N)` + `skills: a, b` | **fixed** | Single `skills (N): a, b` | — |
+| L126 | LOW | `tui/commands.py:44` | `Command exit` no-op on `None` screen.app | **open** | — | — |
+| L127 | LOW | `capabilities.py:14` | `Dict/Tuple/Provider` unused imports; `_make_fake` dead | **fixed** | Remove `Dict/Tuple/Provider` | — |
+| L128 | LOW | `agents/loop.py:18,19,22,23` | `render_tool_results/set_cached/FakeCapability/ChatError/SYSTEM_TEMPLATE/Tuple` unused imports + dead constants `TOOLS_LIST`/`SYSTEM_TOOLS_HINT`/`UNTRUSTED_CONTENT_NOTE` | **partial** | Removed 6 unused imports; dead constants kept for now (low, no import cost) | — |
+| L129 | LOW | repo | Stray `injection-test-set.*` untracked, no ignore rule | **fixed** | Add `/injection-test-set.*` + `studio_outputs/` to `.gitignore` | `git check-ignore -v` |
+| L130 | LOW | `agents/defs.py:70` | Case-insensitive FS collision on `MySkill.md` vs `myskill.md` | **open** | — | — |
+| L131 | LOW | `video.py`/`artifacts.py`/etc. | BOM `U+FEFF` in `pdf_docling.py:1` + `pdf_fallback.py:1` | **open** | Strip or resave UTF-8 | `py -c` BOM check |
+| L132 | LOW | `agents/loop.py` gap | TUI `/agent <name>` only shows, never switches; CLI `--agent` not implemented vs plan | **open** | Roadmap — docs now say "show-only" | — |
+
+## Test status
+
+Full suite: **344 passed** (was 336 before skills/plugins/agents; was 334 before Wave 6).
+Waves 8–10 land with **no latency regression** (walk stops at `.git`, single discovery per turn, origin no longer hosts tarball).
+Wave 11 dead-code sweep is partial — remaining LOW items are tracked above as **open** and do not affect correctness/latency/website.

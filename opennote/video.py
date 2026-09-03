@@ -103,6 +103,8 @@ def _make_slide_image(slide: Slide, index: int) -> Image.Image:
     return img
 
 
+_MAX_SLIDES = 20
+
 def _wrap_text(draw: ImageDraw.Draw, text: str, max_width: int,
                font: ImageFont.FreeTypeFont) -> List[str]:
     """Split *text* into lines that fit within *max_width*."""
@@ -111,7 +113,8 @@ def _wrap_text(draw: ImageDraw.Draw, text: str, max_width: int,
     current = []
     for word in words:
         test_line = " ".join(current + [word])
-        w, _ = draw.textbbox((0, 0), test_line, font=font)[2:]
+        bbox = draw.textbbox((0, 0), test_line, font=font)
+        w = bbox[2] - bbox[0]
         if w <= max_width:
             current.append(word)
         else:
@@ -199,7 +202,13 @@ def _ffmpeg_mux(image_dir: Path, audio_dir: Path, output_mp4: Path) -> Tuple[boo
         m = _re.search(r"slide-(\d+)", p.name)
         return int(m.group(1)) if m else -1
     image_map = { _idx(p): p for p in image_dir.glob("slide-*.png") if _idx(p) >= 0 }
-    audio_map = { _idx(p): p for p in audio_dir.glob("slide-*.mp3") if _idx(p) >= 0 }
+    # Support both mp3 and wav (tts may produce wav for Gemini)
+    audio_map: dict[int, Path] = {}
+    for pat in ("slide-*.mp3", "slide-*.wav"):
+        for p in audio_dir.glob(pat):
+            idx = _idx(p)
+            if idx >= 0 and idx not in audio_map:
+                audio_map[idx] = p
     if not image_map:
         return False, "No slide images found."
     if not audio_map:
@@ -369,6 +378,10 @@ def explain_video(script_json: str, output_dir: Optional[Path] = None) -> VideoR
             success=False,
             error="Script contained no slides.",
         )
+
+    # Cap slide count to prevent OOM on adversarial LLM output (L139)
+    if len(slides) > _MAX_SLIDES:
+        slides = slides[:_MAX_SLIDES]
 
     n_slides = len(slides)
 

@@ -12,6 +12,8 @@ logger = logging.getLogger("opennote.store.vectors")
 
 DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 
+_MODEL_CACHE: Dict[tuple[str, str], Any] = {}
+
 
 class VectorStoreManager:
     """
@@ -53,23 +55,25 @@ class VectorStoreManager:
         self.manifest = Manifest(self.manifest_file)
 
     def _load_embedding_model(self):
-        """Load the embedding model, preferring a cached local copy.
+        """Load the embedding model, preferring a cached local copy."""
+        cache_key = (self.model_name, self.device)
+        if cache_key in _MODEL_CACHE:
+            logger.info(f"Reusing cached embedding model '{self.model_name}' on '{self.device}'")
+            return _MODEL_CACHE[cache_key]
 
-        Using ``local_files_only`` skips HuggingFace freshness checks on every
-        invocation (the source of the ~90s reload lag). Falls back to a network
-        load for first-use when the model isn't cached yet.
-        """
         from sentence_transformers import SentenceTransformer
 
         try:
-            return SentenceTransformer(
+            model = SentenceTransformer(
                 self.model_name, device=self.device, local_files_only=True
             )
         except OSError:
             logger.info(
                 f"Embedding model '{self.model_name}' not cached; downloading..."
             )
-            return SentenceTransformer(self.model_name, device=self.device)
+            model = SentenceTransformer(self.model_name, device=self.device)
+        _MODEL_CACHE[cache_key] = model
+        return model
 
     @staticmethod
     def _pick_device(preferred: Optional[str]) -> str:

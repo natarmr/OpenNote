@@ -5,8 +5,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from opennote.chat.citations import used_sources
-from opennote.chat.client import ChatError, LLMClient, default_provider, get_client
-from opennote.chat.prompt import SYSTEM_TEMPLATE, build_context, build_user_message
+from opennote.chat.client import LLMClient, default_provider, get_client
 from opennote.notebooks import Notebook
 from opennote.retrieval.citations import Citation
 from opennote.retrieval.retriever import Retriever, SearchResult

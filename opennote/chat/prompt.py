@@ -62,7 +62,7 @@ def build_tagged_context(results: Sequence[SearchResult]) -> str:
     for idx, r in enumerate(results, start=1):
         pages = r.metadata.get("pages") or r.metadata.get("page") or r.metadata.get("page_start") or ""
         content = escape_source_content(r.content.strip())
-        parts.append(f'<source id="{idx}" page="{pages}">\n{content}\n</source>')
+        parts.append(f'<source id="{idx}" page="{pages}">\n[{idx}] {r.citation}\n{content}\n</source>')
     return "\n\n".join(parts)
 
 

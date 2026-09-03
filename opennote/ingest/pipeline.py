@@ -67,6 +67,10 @@ def get_parser_for_file(
     return None
 
 
+_MAX_INGEST_FILES = 500
+_SKIP_DIRS = {".git", ".opennote", ".venv", "venv", "__pycache__", ".pytest_cache", "node_modules", "dist", "build"}
+
+
 def find_source_files(target_path: Optional[Path]) -> List[Path]:
     """Collect supported source files from a file path or directory recursively."""
     if target_path is None or target_path == Path("."):
@@ -78,11 +82,21 @@ def find_source_files(target_path: Optional[Path]) -> List[Path]:
         logger.error(f"Unsupported file type: '{target_path}'")
         return []
     if target_path.is_dir():
-        found = [
-            p
-            for p in target_path.rglob("*")
-            if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS
-        ]
+        found: List[Path] = []
+        for p in target_path.rglob("*"):
+            # Skip hidden/build dirs for latency
+            if any(part in _SKIP_DIRS or part.startswith(".") for part in p.parts):
+                # Allow the target dir itself if it starts with dot (e.g. /tmp/.agents) — only skip nested hidden
+                if p != target_path and any(seg.startswith(".") for seg in p.relative_to(target_path).parts[:-1]):
+                    continue
+                # Fallback: check any parent dir name is in skip list
+                if any(seg in _SKIP_DIRS for seg in p.parts):
+                    continue
+            if p.is_file() and p.suffix.lower() in SUPPORTED_EXTENSIONS:
+                found.append(p)
+                if len(found) >= _MAX_INGEST_FILES:
+                    logger.warning("Ingest capped at %d files (more exist under %s)", _MAX_INGEST_FILES, target_path)
+                    break
         return sorted(set(found))
     logger.error(f"Path does not exist: '{target_path}'")
     return []

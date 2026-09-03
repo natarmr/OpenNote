@@ -61,7 +61,6 @@ def _tavily_search(
     query: str,
     *,
     topic: str = _DEFAULT_TOPIC,
-    tone: str = _DEFAULT_TONE,
     max_results: int = _MAX_RESULTS,
 ) -> List[Dict[str, Any]]:
     """Call Tavily search and return raw JSON results list.
@@ -72,10 +71,14 @@ def _tavily_search(
     if not key:
         raise RuntimeError("TAVILY_API_KEY not set")
 
+    # Cap max_results to Tavily limit (20) — prevents unbounded API cost
+    max_results = max(1, min(int(max_results), 20))
+    if topic not in ("general", "news", "finance"):
+        topic = _DEFAULT_TOPIC
+
     payload: Dict[str, Any] = {
         "query": query,
         "topic": topic,
-        "tone": tone,
         "max_results": max_results,
     }
     headers = {"Authorization": f"Bearer {key}"}
@@ -107,6 +110,14 @@ def web_search(query: str, top_k: int = 5) -> List[SearchResult]:
     The returned objects carry metadata ``url``, ``title``, ``fetched_at`` so that
     ``retrieval/citations.py`` can format them as ``[hostname, "Page title"]``.
     """
+    if not query or not str(query).strip():
+        raise ValueError("web_search requires a non-empty query")
+    try:
+        top_k = int(top_k)
+    except (TypeError, ValueError):
+        raise ValueError(f"top_k must be an integer, got {top_k!r}")
+    if top_k < 1 or top_k > 25:
+        raise ValueError(f"top_k must be 1..25, got {top_k}")
     from datetime import datetime, timezone
 
     results = _tavily_search(query, max_results=top_k)
@@ -129,17 +140,14 @@ def web_search(query: str, top_k: int = 5) -> List[SearchResult]:
             "fetched_at": fetched_at,
         }
 
-        # If the URL is short enough and looks like it has HTML, try to extract
-        # sections (title + first few paragraphs) via trafilatura for richer
-        # heading/citation metadata. Cap the number of sequential fetches so a
-        # web_search tool call stays cancellable (L47).
+        # Cap enrichment fetches — count attempts, not successes (prevents 10 sequential fetches on failures)
         if enrich_fetches < _MAX_ENRICH_FETCHES:
+            enrich_fetches += 1
             try:
                 import trafilatura
 
                 downloaded = trafilatura.fetch_url(url)
                 if downloaded:
-                    enrich_fetches += 1
                     sections = _extract_sections(downloaded)
                     chunks = _chunk_sections(sections, url, title or url, ChunkSpec())
                     if chunks:
@@ -160,10 +168,13 @@ def web_search(query: str, top_k: int = 5) -> List[SearchResult]:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("trafilatura enrichment failed for %s: %s", url, exc)
 
-        # Fallback: create SearchResult from bare Tavily data
+        # Fallback: create SearchResult from bare Tavily data (handle content:null)
+        raw_content = r.get("content") or ""
+        if not isinstance(raw_content, str):
+            raw_content = str(raw_content)
         output.append(
             SearchResult(
-                content=r.get("content", "")[:_MAX_CONTENT_CHARS],
+                content=raw_content[:_MAX_CONTENT_CHARS],
                 metadata=meta,
                 similarity=r.get("score", 0.0),
                 citation=citation_for(meta),
@@ -201,6 +212,9 @@ def _is_private_ip(host: str) -> bool:
     """Return True when *host* is a raw IPv4/IPv6 address on a private range."""
     host = host.strip("[]").lower()
     if host in _PRIVATE_HOSTNAMES:
+        return True
+    # Block hex-encoded IP tricks like 0x7f.0.0.1 (bypasses ip_address check)
+    if "0x" in host:
         return True
     # Strip trailing port when the netloc carried one.
     if host.count(":") == 1 and host.rsplit(":", 1)[1].isdigit():

@@ -11,9 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
-
-from opennote.auth.registry import Provider
+from typing import List, Optional
 
 
 @dataclass
@@ -93,13 +91,13 @@ def _probe() -> Capabilities:
     except Exception:
         pass
 
-    # --- Plugins ---
+    # --- Plugins (store plugin names, not tool names) ---
     try:
         from opennote.plugins.loader import PluginLoader, PluginContext
 
         loader = PluginLoader(PluginContext(capabilities=caps))
         loader.load()
-        caps.plugins_loaded = sorted(loader.tools.keys())
+        caps.plugins_loaded = sorted(h._name for h in loader.hooks)
     except Exception:
         pass
 
@@ -125,6 +123,12 @@ def get_capabilities() -> Capabilities:
     if _cached is not None:
         return _cached
     return _probe()
+
+
+def clear_cached() -> None:
+    """Clear cached capabilities (e.g. after env change)."""
+    global _cached
+    _cached = None
 
 
 def set_cached(caps: Capabilities) -> None:

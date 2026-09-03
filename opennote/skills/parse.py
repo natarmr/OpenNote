@@ -14,34 +14,35 @@ _NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _MAX_NAME_LEN = 64
 _MAX_DESC_LEN = 1024
 
+# Anchored frontmatter delimiters: "---" at start of line, optional trailing spaces
+_OPEN_RE = re.compile(r"\A\ufeff?---[ \t]*\r?\n")
+_CLOSE_RE = re.compile(r"\r?\n---[ \t]*\r?\n")
+
 
 def parse_skill_file(path: Path) -> Tuple[Dict, str]:
-    """Parse *path* (SKILL.md) into (frontmatter dict, body str).
-
-    Raises ValueError on malformed YAML or missing frontmatter delimiters.
-    """
+    """Parse *path* (SKILL.md) into (frontmatter dict, body str)."""
     text = path.read_text(encoding="utf-8")
-    if not text.startswith("---"):
-        raise ValueError(f"{path}: missing opening '---' frontmatter delimiter")
-    # Split on the second "---" line
-    # frontmatter is between first and second "---" at start of line
-    parts = text.split("\n---", 1)
-    if len(parts) < 2:
-        # Fallback: try "---\n" variant
-        # Some files use "\n---\n" on its own line
-        idx = text.find("\n---", 3)
-        if idx == -1:
-            raise ValueError(f"{path}: missing closing '---' frontmatter delimiter")
-        fm_text = text[3:idx]
-        body = text[idx + 4 :]
+    # Strip BOM for delimiter check (U+FEFF)
+    if text.lstrip("\ufeff").lstrip().startswith("---"):
+        text = text.lstrip("\ufeff")
     else:
-        fm_text = parts[0][3:]  # strip leading "---"
-        body = parts[1]
-        # body starts with maybe "\n" then content; strip one leading newline if present
-        if body.startswith("\n"):
-            body = body[1:]
-        elif body.startswith("\r\n"):
-            body = body[2:]
+        # Also handle BOM-prefixed file
+        text_stripped = text.lstrip("\ufeff").lstrip()
+        if not text_stripped.startswith("---"):
+            raise ValueError(f"{path}: missing opening '---' frontmatter delimiter")
+        text = text_stripped
+
+    m_open = _OPEN_RE.match(text)
+    if not m_open:
+        raise ValueError(f"{path}: missing opening '---' frontmatter delimiter")
+
+    rest = text[m_open.end():]
+    m_close = _CLOSE_RE.search(rest)
+    if not m_close:
+        raise ValueError(f"{path}: missing closing '---' frontmatter delimiter")
+
+    fm_text = rest[: m_close.start()]
+    body = rest[m_close.end():]
 
     try:
         fm = yaml.safe_load(fm_text) or {}
@@ -51,7 +52,7 @@ def parse_skill_file(path: Path) -> Tuple[Dict, str]:
     if not isinstance(fm, dict):
         raise ValueError(f"{path}: frontmatter must be a mapping")
 
-    return fm, body.lstrip("\n")
+    return fm, body.lstrip("\r\n")
 
 
 def validate_frontmatter(fm: Dict, skill_dir_name: str, path: Path) -> None:
@@ -76,7 +77,6 @@ def validate_frontmatter(fm: Dict, skill_dir_name: str, path: Path) -> None:
         raise ValueError(f"{path}: frontmatter 'description' is required and must be non-empty")
     if len(desc) > _MAX_DESC_LEN:
         raise ValueError(f"{path}: 'description' too long ({len(desc)} > {_MAX_DESC_LEN})")
-    # license / compatibility are optional strings if present
     for opt in ("license", "compatibility"):
         if opt in fm and fm[opt] is not None and not isinstance(fm[opt], str):
             raise ValueError(f"{path}: frontmatter '{opt}' must be a string if present")

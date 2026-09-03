@@ -44,17 +44,18 @@ class SkillRegistry:
                 validate_frontmatter(fm, skill_dir.name, skill_md)
                 name = fm["name"]
                 desc = fm["description"]
-                # Collect bundled files (top 200, for manifest)
+                # Collect bundled files (manifest, cap 200; skip symlinks for latency/safety)
                 files: List[str] = []
                 try:
                     for p in skill_dir.rglob("*"):
+                        if p.is_symlink():
+                            continue
                         if p.is_file() and p.name != "SKILL.md":
                             try:
                                 files.append(str(p.relative_to(skill_dir)))
                             except ValueError:
                                 files.append(p.name)
-                            if len(files) >= 200:
-                                break
+                    files = sorted(files)[:200]
                 except OSError:
                     pass
                 skill = Skill(
@@ -63,7 +64,7 @@ class SkillRegistry:
                     directory=skill_dir,
                     body=body,
                     frontmatter=fm,
-                    files=sorted(files),
+                    files=files,
                 )
                 reg._skills.append(skill)
                 reg._by_name[name] = skill

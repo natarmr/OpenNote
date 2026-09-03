@@ -25,3 +25,5 @@ artifacts/
 
 # Stray sample documents in the repo root
 /*.pdf
+/injection-test-set.*
+studio_outputs/

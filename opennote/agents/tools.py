@@ -120,6 +120,8 @@ class ToolContext:
     # For task tool recursion
     client: Optional[Any] = None
     history: Optional[List[Dict[str, Any]]] = None
+    depth: int = 0
+    subagent_retrieved: List[SearchResult] = field(default_factory=list)
 
     @classmethod
     def from_retriever(cls, retriever: Retriever) -> "ToolContext":
@@ -291,7 +293,7 @@ def _build_run_skill_script_schema() -> Dict[str, Any]:
 
 
 def _run_skill_script_execute(ctx: ToolContext, skill: str, script: str, args: Optional[List[str]] = None) -> str:
-    if not os.environ.get("OPENNOTE_ALLOW_SKILL_SCRIPTS", "").lower() in ("1", "true", "yes", "on"):
+    if not os.environ.get("OPENNOTE_ALLOW_SKILL_SCRIPTS", "").strip().lower() in ("1", "true", "yes", "on"):
         raise ValueError("Skill script execution is disabled. Set OPENNOTE_ALLOW_SKILL_SCRIPTS=1 to enable.")
     if not skill or not str(skill).strip():
         raise ValueError("run_skill_script requires a non-empty 'skill' string.")
@@ -385,7 +387,12 @@ def _build_task_schema(agent_registry: Any) -> Dict[str, Any]:
     }
 
 
+_MAX_TASK_DEPTH = 1
+
+
 def _task_execute(ctx: ToolContext, subagent: str, task: str) -> str:
+    if ctx.depth >= _MAX_TASK_DEPTH:
+        raise ValueError("Maximum subagent nesting depth reached (task tool not available inside subagents).")
     if not subagent or not str(subagent).strip():
         raise ValueError("task requires a non-empty 'subagent' string.")
     if not task or not str(task).strip():
@@ -410,40 +417,28 @@ def _task_execute(ctx: ToolContext, subagent: str, task: str) -> str:
     if agent_def.mode not in ("subagent", "all"):
         raise ValueError(f"Agent '{subagent}' is not a subagent (mode={agent_def.mode}).")
 
-    # Need notebook + retriever + client to spawn subagent
+    # Need notebook + retriever to spawn subagent
     notebook = ctx.notebook
     retriever = ctx.retriever
     if notebook is None or retriever is None:
         raise ValueError("task tool requires a notebook and retriever context.")
 
-    # Build a focused system prompt addition from agent def
-    # We spawn a nested agent_turn with a modified system prompt prefix
     from opennote.agents.loop import agent_turn as _agent_turn
 
-    # Use the same client if available, else default
     client = ctx.client
 
-    # History for subagent: we pass a minimal history (not the full parent history)
-    # to keep subagent focused
     try:
         result = _agent_turn(
             notebook=notebook,
             question=task,
             retriever=retriever,
             client=client,
-            max_rounds=3,  # subagents get fewer rounds
+            max_rounds=3,
             history=[],
+            _depth=ctx.depth + 1,
         )
-        # Merge subagent retrieved chunks into parent context? The parent loop
-        # will handle this by appending subagent result text. For grounding:
-        # we include citation footer if subagent had sources, and we store
-        # subagent's retrieved list on the context for parent to merge.
-        # Simplest: return text that includes sources footer if any.
         answer = result.result.answer
-        # Store retrieved for parent loop to merge (side-channel via ctx)
-        if not hasattr(ctx, "_subagent_retrieved"):
-            ctx._subagent_retrieved = []  # type: ignore[attr-defined]
-        ctx._subagent_retrieved.extend(result.result.results)  # type: ignore[attr-defined]
+        ctx.subagent_retrieved.extend(result.result.results)
         return answer
     except Exception as exc:
         raise ValueError(f"Subagent '{subagent}' failed: {exc}") from exc
@@ -486,22 +481,23 @@ def _get_dynamic_schemas(ctx: ToolContext) -> Dict[str, Dict[str, Any]]:
     except Exception:
         pass
 
-    # run_skill_script — only when allowed
-    if os.environ.get("OPENNOTE_ALLOW_SKILL_SCRIPTS", "").lower() in ("1", "true", "yes", "on"):
+    # run_skill_script — only when allowed (strip spaces like _env_bool)
+    if os.environ.get("OPENNOTE_ALLOW_SKILL_SCRIPTS", "").strip().lower() in ("1", "true", "yes", "on"):
         schemas["run_skill_script"] = _build_run_skill_script_schema()
 
-    # Task tool — when agent registry has subagents
-    try:
-        areg = ctx.agent_registry
-        if areg is None:
-            from opennote.agents.defs import AgentRegistry
-            areg = AgentRegistry.discover()
-            ctx.agent_registry = areg
-        subs = [a for a in areg.list(mode="subagent") if not a.hidden]
-        if subs:
-            schemas["task"] = _build_task_schema(areg)
-    except Exception:
-        pass
+    # Task tool — when agent registry has subagents and depth allows
+    if ctx.depth < _MAX_TASK_DEPTH:
+        try:
+            areg = ctx.agent_registry
+            if areg is None:
+                from opennote.agents.defs import AgentRegistry
+                areg = AgentRegistry.discover()
+                ctx.agent_registry = areg
+            subs = [a for a in areg.list(mode="subagent") if not a.hidden]
+            if subs:
+                schemas["task"] = _build_task_schema(areg)
+        except Exception:
+            pass
 
     # Plugin tools
     try:

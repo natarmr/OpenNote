@@ -38,6 +38,20 @@ opennote chat --notebook my_notebook
 
 ## 🛠 Installation
 
+**One-line (global):**
+
+```bash
+# macOS / Linux / Git Bash / WSL
+curl -fsSL https://ramratan.in/install | bash
+
+# Windows PowerShell 5.1 — bare `curl` is an alias for Invoke-WebRequest, use:
+curl.exe -fsSL https://ramratan.in/install | bash
+# or native PowerShell:
+iwr -useb https://ramratan.in/install.ps1 | iex
+```
+
+**From source (dev):**
+
 ```bash
 pip install -e ".[dev]"
 ```

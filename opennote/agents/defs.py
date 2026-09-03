@@ -51,15 +51,20 @@ class AgentDef:
 
 
 def _parse_agent_file(path: Path) -> AgentDef:
-    text = path.read_text(encoding="utf-8")
-    if not text.startswith("---"):
+    text = path.read_text(encoding="utf-8").lstrip("\ufeff")
+    if not text.lstrip().startswith("---"):
         raise ValueError(f"{path}: missing frontmatter '---'")
-    # Split frontmatter
-    idx = text.find("\n---", 3)
-    if idx == -1:
+    text = text.lstrip()
+    import re as _re
+    m_open = _re.match(r"---[ \t]*\r?\n", text)
+    if not m_open:
+        raise ValueError(f"{path}: missing opening '---'")
+    rest = text[m_open.end():]
+    m_close = _re.search(r"\r?\n---[ \t]*\r?\n", rest)
+    if not m_close:
         raise ValueError(f"{path}: missing closing '---'")
-    fm_text = text[3:idx]
-    body = text[idx + 4 :].lstrip("\n")
+    fm_text = rest[: m_close.start()]
+    body = rest[m_close.end():].lstrip("\r\n")
     try:
         fm = yaml.safe_load(fm_text) or {}
     except yaml.YAMLError as exc:
@@ -113,35 +118,24 @@ def _parse_agent_file(path: Path) -> AgentDef:
 
 
 def _agent_search_roots(cwd: Path | None = None) -> List[Path]:
+    from opennote.fsutil import walk_worktree_roots
+
     cwd = Path(cwd) if cwd is not None else Path.cwd()
     clean: List[Path] = []
-    cur = cwd.resolve()
-    seen: set[Path] = set()
-    depth = 0
-    while depth < 30:
-        if cur in seen:
-            break
-        seen.add(cur)
-        clean.append(cur / ".opennote" / "agents")
-        parent = cur.parent
-        if parent == cur:
-            break
-        cur = parent
-        depth += 1
-    # Global
+    for ancestor in walk_worktree_roots(cwd):
+        clean.append(ancestor / ".opennote" / "agents")
     home = default_home()
-    global_candidates = [
-        home / "agents",
-        Path.home() / ".config" / "opennote" / "agents",
-    ]
-    for p in global_candidates:
+    for p in [home / "agents", Path.home() / ".config" / "opennote" / "agents"]:
         if p not in clean:
             clean.append(p)
-    # Dedupe
+    # Dedupe on resolved path
     uniq: List[Path] = []
     seen_s: set[str] = set()
     for p in clean:
-        k = str(p)
+        try:
+            k = str(p.resolve())
+        except (OSError, RuntimeError):
+            k = str(p)
         if k not in seen_s:
             seen_s.add(k)
             uniq.append(p)

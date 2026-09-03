@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logger = logging.getLogger("opennote.plugins.supermemory")
 
-_SUPERMEMORY_API_BASE = os.environ.get("SUPERMEMORY_API_BASE", "https://api.supermemory.ai")
-# Optional container tag to scope memories per project/notebook
 _DEFAULT_CONTAINER = "opennote"
+
+
+def _api_base() -> str:
+    return os.environ.get("SUPERMEMORY_API_BASE", "https://api.supermemory.ai").rstrip("/")
 
 
 def _headers() -> Dict[str, str]:
@@ -25,12 +27,24 @@ def _headers() -> Dict[str, str]:
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
 
-def _memory_search_impl(query: str, top_k: Any = 5, container_tag: str | None = None) -> List[Dict[str, Any]]:
-    """Call Supermemory search and return normalized hits.
+def _container_tag_for(ctx: Any = None) -> str:
+    """Derive scoped container tag — notebook-specific if available."""
+    if ctx is not None:
+        try:
+            nb = getattr(ctx, "notebook", None)
+            if nb and getattr(nb, "name", None):
+                return f"opennote-{nb.name}"
+        except Exception:
+            pass
+    tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG")
+    if tag:
+        return tag
+    # Try notebook on result object (on_turn_complete path)
+    return _DEFAULT_CONTAINER
 
-    Returns a list of dicts {content, metadata}. The plugin tool wrapper
-    will convert these to SearchResult-like results for the LLM.
-    """
+
+def _memory_search_impl(query: str, top_k: Any = 5, container_tag: str | None = None) -> List[Dict[str, Any]]:
+    """Call Supermemory search and return normalized hits."""
     import httpx
 
     try:
@@ -48,19 +62,13 @@ def _memory_search_impl(query: str, top_k: Any = 5, container_tag: str | None = 
     if not key:
         raise RuntimeError("SUPERMEMORY_API_KEY is not set")
 
-    # Supermemory v3 search: POST /v3/search  {q, containerTag, limit}
-    # See https://supermemory.ai/docs — uses containerTags for scoping
     payload: Dict[str, Any] = {
         "q": query.strip(),
         "limit": top_k,
+        "containerTag": container_tag or _container_tag_for(),
     }
-    if container_tag:
-        payload["containerTag"] = container_tag
-    else:
-        # Use default unless caller overrides; keeps memories scoped per app
-        payload["containerTag"] = os.environ.get("SUPERMEMORY_CONTAINER_TAG", _DEFAULT_CONTAINER)
 
-    url = f"{_SUPERMEMORY_API_BASE.rstrip('/')}/v3/search"
+    url = f"{_api_base()}/v3/search"
     try:
         with httpx.Client(timeout=15) as client:
             resp = client.post(url, json=payload, headers=_headers())
@@ -70,10 +78,21 @@ def _memory_search_impl(query: str, top_k: Any = 5, container_tag: str | None = 
         logger.warning("Supermemory search failed: %s", exc)
         raise RuntimeError(f"Supermemory search failed: {exc}") from exc
 
-    # Normalize response shapes — API returns {results: [{content, metadata, ...}]} or {memories: [...]}
-    results = data.get("results") or data.get("memories") or data.get("data") or []
+    # Normalize response shapes — check key presence, not truthiness (empty list is valid)
     if isinstance(data, list):
         results = data
+    elif isinstance(data, dict):
+        if "results" in data and data["results"] is not None:
+            results = data["results"]
+        elif "memories" in data and data["memories"] is not None:
+            results = data["memories"]
+        elif "data" in data and data["data"] is not None:
+            results = data["data"]
+        else:
+            results = []
+    else:
+        results = []
+
     out: List[Dict[str, Any]] = []
     for r in results[:top_k]:
         if isinstance(r, dict):
@@ -93,15 +112,7 @@ def _memory_search_tool(ctx: Any, query: str, top_k: Any = 5) -> List[Any]:
     from opennote.retrieval.citations import citation_for
     from opennote.retrieval.retriever import SearchResult
 
-    # Notebook-scoped container tag if available
-    container_tag = None
-    try:
-        nb = getattr(ctx, "notebook", None)
-        if nb and getattr(nb, "name", None):
-            container_tag = f"opennote-{nb.name}"
-    except Exception:
-        pass
-
+    container_tag = _container_tag_for(ctx)
     hits = _memory_search_impl(query, top_k=top_k, container_tag=container_tag)
     results: List[SearchResult] = []
     for h in hits:
@@ -130,41 +141,35 @@ def _on_turn_complete(result: Any) -> None:
         answer = getattr(result, "answer", "") or ""
         if not question or not answer:
             return
-        # Don't store abstention answers
         if "sources don't contain this" in answer:
             return
-        container_tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG", _DEFAULT_CONTAINER)
-        # Try to scope by notebook name
-        try:
-            # result may have notebook-ish context in extra? Use containerTag variant
-            pass
-        except Exception:
-            pass
+        container_tag = _container_tag_for(result)
+        # If result carries notebook name, prefer scoped tag
+        nb_name = getattr(getattr(result, "notebook", None), "name", None) if hasattr(result, "notebook") else None
+        if nb_name:
+            container_tag = f"opennote-{nb_name}"
 
         payload = {
             "content": f"Q: {question}\nA: {answer}",
             "containerTag": container_tag,
             "metadata": {"source": "opennote", "type": "qa_turn"},
         }
-        url = f"{_SUPERMEMORY_API_BASE.rstrip('/')}/v3/add"
-        # Also try /v3/memories — handle both shapes with fallback
+        url = f"{_api_base()}/v3/add"
         try:
             with httpx.Client(timeout=10) as client:
                 resp = client.post(url, json=payload, headers=_headers())
                 if resp.status_code == 404:
-                    # Fallback endpoint
-                    alt_url = f"{_SUPERMEMORY_API_BASE.rstrip('/')}/v3/memories"
+                    alt_url = f"{_api_base()}/v3/memories"
                     resp = client.post(alt_url, json=payload, headers=_headers())
                 resp.raise_for_status()
         except Exception as exc:
-            logger.debug("Supermemory add failed (non-fatal): %s", exc)
+            logger.warning("Supermemory add failed (non-fatal): %s", exc)
     except Exception as exc:
-        logger.debug("Supermemory on_turn_complete failed: %s", exc)
+        logger.warning("Supermemory on_turn_complete failed: %s", exc)
 
 
 def register(ctx) -> Dict[str, Any]:
     """Plugin entry point — called by PluginLoader."""
-    # Double-gate: loader already checks key, but be defensive
     if not os.environ.get("SUPERMEMORY_API_KEY"):
         return {"tools": {}}
 
@@ -180,8 +185,6 @@ def register(ctx) -> Dict[str, Any]:
                     },
                     "required": ["query"],
                 },
-                # capture ctx via closure; the loader will call execute(tool_ctx, **kwargs)
-                # but our wrapper expects (tool_ctx, query, top_k) so adapt
                 "execute": lambda tool_ctx, query, top_k=5, **_: _memory_search_tool(tool_ctx, query, top_k),
             }
         },

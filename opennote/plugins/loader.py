@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib
+import hashlib
 import importlib.metadata
 import importlib.util
 import logging
@@ -23,6 +23,10 @@ class PluginContext:
     capabilities: Any = None
     notebook: Any = None
     logger: Any = None  # logging.Logger
+
+    def __post_init__(self):
+        if self.logger is None:
+            self.logger = logger
 
     def httpx_client(self, **kwargs):
         """Factory for httpx.Client — plugins should use this (no new deps)."""
@@ -47,37 +51,31 @@ class PluginHooks:
 
 
 def _plugin_dirs(cwd: Path | None = None) -> List[Path]:
+    from opennote.fsutil import walk_worktree_roots
+
     cwd = Path(cwd) if cwd is not None else Path.cwd()
     dirs: List[Path] = []
-    # Project-level
-    # Walk up to find .opennote/plugins in ancestors (like skills)
-    cur = cwd.resolve()
-    seen = set()
-    depth = 0
-    while depth < 30:
-        if cur in seen:
-            break
-        seen.add(cur)
-        dirs.append(cur / ".opennote" / "plugins")
-        parent = cur.parent
-        if parent == cur:
-            break
-        cur = parent
-        depth += 1
-    # Global
+    for ancestor in walk_worktree_roots(cwd):
+        dirs.append(ancestor / ".opennote" / "plugins")
     home = default_home()
     dirs.append(home / "plugins")
-    # Also check ~/.config/opennote/plugins (XDG)
     dirs.append(Path.home() / ".config" / "opennote" / "plugins")
-    # Dedupe
+    # Dedupe on resolved path
     uniq: List[Path] = []
     seen_s: set[str] = set()
     for d in dirs:
-        k = str(d)
+        try:
+            k = str(d.resolve())
+        except (OSError, RuntimeError):
+            k = str(d)
         if k not in seen_s:
             seen_s.add(k)
             uniq.append(d)
     return uniq
+
+
+def _stable_hash(text: str) -> str:
+    return hashlib.sha1(text.encode()).hexdigest()[:8]
 
 
 def _import_file(path: Path, module_name: str):
@@ -107,6 +105,8 @@ class PluginLoader:
 
     def load(self, cwd: Path | None = None) -> "PluginLoader":
         """Discover and load all plugins; isolated failures are logged and skipped."""
+        # 0. Built-ins first (lowest priority — user plugins override)
+        self._load_builtin()
         # 1. File-based plugins
         for pdir in _plugin_dirs(cwd):
             if not pdir.is_dir():
@@ -114,7 +114,7 @@ class PluginLoader:
             try:
                 for entry in sorted(pdir.iterdir()):
                     if entry.is_file() and entry.suffix == ".py" and not entry.name.startswith("_"):
-                        mod_name = f"opennote.plugins._file_{entry.stem}_{abs(hash(str(entry)))%100000}"
+                        mod_name = f"opennote.plugins._file_{entry.stem}_{_stable_hash(str(entry))}"
                         try:
                             mod = _import_file(entry, mod_name)
                             self._register_module(mod, entry.stem)
@@ -122,9 +122,8 @@ class PluginLoader:
                             logger.warning("Skipping plugin %s: %s", entry, exc)
                             continue
                     elif entry.is_dir() and (entry / "__init__.py").exists():
-                        # Package-style plugin dir
                         init = entry / "__init__.py"
-                        mod_name = f"opennote.plugins._pkg_{entry.name}_{abs(hash(str(entry)))%100000}"
+                        mod_name = f"opennote.plugins._pkg_{entry.name}_{_stable_hash(str(entry))}"
                         try:
                             mod = _import_file(init, mod_name)
                             self._register_module(mod, entry.name)
@@ -160,9 +159,6 @@ class PluginLoader:
                     logger.warning("Skipping entry-point plugin %s: %s", ep.name, exc)
         except Exception as exc:
             logger.debug("Entry-point discovery failed: %s", exc)
-
-        # 3. Built-in plugins (gated by capabilities)
-        self._load_builtin()
 
         return self
 

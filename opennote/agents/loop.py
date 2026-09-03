@@ -13,14 +13,14 @@ import json
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
-from opennote.agents.tools import TOOL_SCHEMAS, ToolContext, execute_tool, get_tool_schemas, render_tool_results
-from opennote.capabilities import get_capabilities, set_cached, FakeCapability
+from opennote.agents.tools import TOOL_SCHEMAS, ToolContext, execute_tool, get_tool_schemas
+from opennote.capabilities import get_capabilities
 from opennote.chat.ask import AskResult
 from opennote.chat.citations import used_sources
-from opennote.chat.client import ChatError, LLMClient, default_provider, get_client
-from opennote.chat.prompt import SYSTEM_POST_TAGGED, SYSTEM_PRE_TAGGED, SYSTEM_TEMPLATE
+from opennote.chat.client import LLMClient, default_provider, get_client
+from opennote.chat.prompt import SYSTEM_POST_TAGGED, SYSTEM_PRE_TAGGED
 from opennote.notebooks import Notebook
 from opennote.retrieval.retriever import Retriever, SearchResult
 
@@ -133,6 +133,7 @@ def agent_turn(
     max_tokens: int = 1024,
     should_cancel: Optional[Callable[[], bool]] = None,
     on_round: Optional[Callable[[int, int], None]] = None,
+    _depth: int = 0,
 ) -> AgentResult:
     """Run one user *question* through the multi-round tool loop.
 
@@ -190,6 +191,7 @@ def agent_turn(
         agent_registry=agent_registry,
         client=client,
         history=history,
+        depth=_depth,
     )
 
     # --- Build available tools (core + dynamic) filtered by capabilities ---
@@ -230,10 +232,10 @@ def agent_turn(
         cap_parts.append("video (narrated slideshow)")
     if getattr(caps, "skills_available", False):
         n = getattr(caps, "skills_count", 0)
-        cap_parts.append(f"skills ({n} installed)")
-        # Append skill names for visibility
         if skill_registry and not skill_registry.is_empty():
-            cap_parts.append(f"skills: {', '.join(skill_registry.names())}")
+            cap_parts.append(f"skills ({n}): {', '.join(skill_registry.names())}")
+        else:
+            cap_parts.append(f"skills ({n} installed)")
     if getattr(caps, "plugins_loaded", None):
         if caps.plugins_loaded:
             cap_parts.append(f"plugins: {', '.join(caps.plugins_loaded)}")
@@ -365,14 +367,10 @@ def agent_turn(
         for tc in response.tool_calls:
             try:
                 payload = execute_tool(tc.name, tool_ctx, tc.arguments)
-                # Handle subagent retrieved merge (task tool side-channel)
-                if hasattr(tool_ctx, "_subagent_retrieved") and getattr(tool_ctx, "_subagent_retrieved"):
-                    extra = list(getattr(tool_ctx, "_subagent_retrieved"))
-                    # Extend parent retrieved with subagent chunks for citation validation
-                    # (offset numbering will account for this in next tool results)
-                    retrieved.extend(extra)
-                    # Clear after merging
-                    tool_ctx._subagent_retrieved = []  # type: ignore[attr-defined]
+                # Merge subagent retrieved chunks for citation validation
+                if tool_ctx.subagent_retrieved:
+                    retrieved.extend(list(tool_ctx.subagent_retrieved))
+                    tool_ctx.subagent_retrieved.clear()
                 if isinstance(payload, list) and all(
                     isinstance(r, SearchResult) for r in payload
                 ):

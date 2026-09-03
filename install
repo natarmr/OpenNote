@@ -1,26 +1,57 @@
 #!/usr/bin/env bash
 # OpenNote Installer - ramratan.in
-# Usage: curl -fsSL https://ramratan.in/install | bash
-# This mirrors the opencode pattern: single-command install from anywhere
+# Usage:
+#   macOS / Linux / Git Bash / WSL:
+#     curl -fsSL https://ramratan.in/install | bash
+#   Windows PowerShell 5.1 (curl is an alias for Invoke-WebRequest):
+#     curl.exe -fsSL https://ramratan.in/install | bash
+#     # or native PowerShell:
+#     iwr -useb https://ramratan.in/install.ps1 | iex
+# Docs: https://github.com/natarmr/OpenNote#installation
 
 set -euo pipefail
 
-# 1. Python version check (cross-platform: Windows/macOS/Linux)
-if ! command -v python3 &>/dev/null; then
-    echo "Python 3.10+ is required" >&2
+# 1. Resolve Python (cross-platform: python3 / python / py launcher on Windows)
+PYTHON_BIN=""
+if command -v python3 &>/dev/null; then
+    PYTHON_BIN="python3"
+elif command -v python &>/dev/null; then
+    PYTHON_BIN="python"
+elif command -v py &>/dev/null; then
+    PYTHON_BIN="py"
+else
+    echo "Python 3.10+ is required (python3/python/py not found)" >&2
     exit 1
 fi
 
-# 2. Install OpenNote from hosted source
-#    pip handles platform-appropriate wheel downloads automatically
-echo "📦 Installing OpenNote from ramratan.in..."
-pip install "https://ramratan.in/opennote-0.1.0.tar.gz#egg=opennote"
+# Verify Python version >= 3.10
+if ! "$PYTHON_BIN" -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)" 2>/dev/null; then
+    echo "Python 3.10+ is required (found $("$PYTHON_BIN" --version 2>&1))" >&2
+    exit 1
+fi
 
-# 3. Verify installation and confirm
-if command -v opennote &>/dev/null; then
-    echo "✅ OpenNote installed successfully!"
+# 2. Install OpenNote
+#    Prefer PyPI when available; fallback to GitHub tarball (no hosting burden on ramratan.in).
+#    Uses PEP 508 direct reference (no deprecated #egg fragment).
+echo "Installing OpenNote..."
+
+PIP_CMD=("$PYTHON_BIN" -m pip)
+if "${PIP_CMD[@]}" install --quiet "opennote" 2>/dev/null; then
+    echo "Installed from PyPI."
+else
+    echo "PyPI not available, installing from GitHub..."
+    "${PIP_CMD[@]}" install "opennote @ https://github.com/natarmr/OpenNote/archive/refs/heads/main.tar.gz"
+fi
+
+# 3. Verify installation
+if "$PYTHON_BIN" -m opennote --help &>/dev/null; then
+    echo "OpenNote installed successfully!"
+    echo "Run: opennote --help  (or: $PYTHON_BIN -m opennote --help)"
+elif command -v opennote &>/dev/null; then
+    echo "OpenNote installed successfully!"
     echo "Run: opennote --help"
 else
-    echo "⚠️  Installation may need re-running or check PATH"
+    echo "Installation may need PATH adjustment." >&2
+    echo "Try: $PYTHON_BIN -m opennote --help" >&2
     exit 1
 fi

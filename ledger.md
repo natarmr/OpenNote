@@ -247,4 +247,25 @@ remains lazy (no global cache that hides `TAVILY_API_KEY` changes in tests).
 
 Full suite: **344 passed** (was 336 before skills/plugins/agents; was 334 before Wave 6).
 Waves 8–10 land with **no latency regression** (walk stops at `.git`, single discovery per turn, origin no longer hosts tarball).
+
+## Wave 12 — Deep pass over untouched core (current session) — executed
+
+Wave 12 covered the remaining core: `audio/tts.py`, `video.py`, `websearch.py` (remaining SSRF), `chat/`, `auth/`, `ingest/`, `store/`, `retrieval/`. All HIGH/MED fixed below; LOW hygiene remains **open** where noted. Latency kept flat (capped walks, model cache).
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L133 | LOW | `prompts.py:1` | Entire module dead (duplicates `chat/prompt.py`) | **fixed** | Delete `opennote/prompts.py` | `py -m py_compile` |
+| L134 | LOW | `chat/ask.py:9` | Dead top imports `SYSTEM_TEMPLATE/build_context/build_user_message` + `ChatError` | **fixed** | Remove imports; keep local `build_tagged_context` import | — |
+| L135 | MED | `chat/prompt.py:60` | `build_tagged_context` missing `[{idx}] {citation}` — grounding mismatch with `loop:_tool_content` | **fixed** | Emit `[{idx}] {citation}` inside `<source>` | `test_chat_prompt` |
+| L136 | MED | `websearch.py:64` | Still sent `tone` (unknown field → Tavily 400); `max_results` uncapped | **fixed** | Drop `tone` param, cap `max_results` 1..20, validate `topic` | `test_websearch` |
+| L137 | MED | `websearch.py:104` | `web_search` no validation vs `tools:_web_search` clamped 1..25 | **fixed** | Validate `query` non-empty, `top_k` 1..25 | — |
+| L138 | MED | `websearch.py:136` | `enrich_fetches` counted successes not attempts → 10 failing fetches bypass `_MAX_ENRICH_FETCHES=3` | **fixed** | Increment before fetch | — |
+| L139 | MED | `websearch.py:166` | `r.get("content", "")[:_MAX` on `content:null` → `TypeError` | **fixed** | Coerce `None` → `""` via `raw_content = r.get("content") or ""` | — |
+| L140 | MED | `websearch.py:200` | Hex IP `0x7f...` bypasses `is_private_ip` | **fixed** | Block `0x` in host | — |
+| L141 | MED | `video.py:106` | `_wrap_text` width `bbox[2]` not `bbox[2]-bbox[0]` → overflow | **fixed** | `w = bbox[2]-bbox[0]` | `test_video` |
+| L142 | MED | `video.py:205` | `audio_map` globbed `*.mp3` only, wav from Gemini missed → mux "No audio" | **fixed** | Glob `*.mp3` + `*.wav` | — |
+| L143 | MED | `video.py:382` | No slide cap → 200 slides → OOM | **fixed** | `_MAX_SLIDES=20`, cap before render | — |
+| L144 | MED | `ingest/pipeline.py:70` | `rglob("*")` uncapped, no hidden-dir skip — large ingest hangs | **fixed** | `_MAX_INGEST_FILES=500`, skip `_SKIP_DIRS`, warn on cap | — |
+| L145 | MED | `store/vectors.py:44` | `SentenceTransformer` reload per `Retriever()` (~90s) — no cache | **fixed** | Module `_MODEL_CACHE` keyed by `(model_name, device)` | — |
+| L146 | LOW | repo hygiene | `prompts.py` dead import scan remaining: `artifacts:time`, `fsutil:Dict`, `security:Path`, etc. | **open** | Tracked, low, no latency | — |
 Wave 11 dead-code sweep is partial — remaining LOW items are tracked above as **open** and do not affect correctness/latency/website.

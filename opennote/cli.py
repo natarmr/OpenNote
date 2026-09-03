@@ -344,12 +344,18 @@ def chat_cmd(
 
             if cmd == "/help":
                 typer.echo(
-                    "  /help      show this help\n"
-                    "  /exit      end\n"
-                    "  /clear     clear transcript\n"
-                    "  /sources   list notebook sources\n"
-                    "  /remove    remove a source\n"
-                    "  /model ID  switch LLM provider (e.g. /model groq)"
+                    "  /help                  show this help\n"
+                    "  /exit                  end\n"
+                    "  /clear                 clear transcript\n"
+                    "  /sources               list notebook sources\n"
+                    "  /remove                remove a source\n"
+                    "  /model ID              switch LLM provider (e.g. /model groq)\n"
+                    "  /skills                list installed skills\n"
+                    "  /skill NAME            show a skill\n"
+                    "  /plugins               list loaded plugins\n"
+                    "  /agents                list available agents\n"
+                    "  /agent NAME            show an agent\n"
+                    "  /capabilities          show runtime capabilities"
                 )
             elif cmd == "/exit":
                 typer.echo("Goodbye!")
@@ -401,6 +407,62 @@ def chat_cmd(
                     typer.echo(f"Provider switched to {pid} ({client.model}).")
                 except (ChatError, ValueError) as e:
                     typer.echo(f"Error: {e}", err=True)
+            elif cmd == "/skills":
+                from opennote.skills.registry import SkillRegistry
+                reg = SkillRegistry.discover()
+                skills = reg.list()
+                if not skills:
+                    typer.echo("No skills installed. Install: npx skills add <owner/repo> -a codex")
+                else:
+                    for s in skills:
+                        typer.echo(f"  {s.name:<25} {s.description[:80]}")
+            elif cmd == "/skill":
+                if not arg:
+                    typer.echo("Usage: /skill <name>")
+                    continue
+                from opennote.skills.registry import SkillRegistry as SR2
+                reg2 = SR2.discover()
+                sk = reg2.get(arg)
+                if sk is None:
+                    typer.echo(f"Skill '{arg}' not found.")
+                    continue
+                typer.echo(f"Skill: {sk.name}\nDescription: {sk.description}\nDir: {sk.directory}\n")
+                typer.echo(sk.body[:3000])
+            elif cmd == "/plugins":
+                from opennote.capabilities import get_capabilities as _gc
+                from opennote.plugins.loader import PluginContext as _PC, PluginLoader as _PL
+                caps2 = _gc()
+                loader2 = _PL(_PC(capabilities=caps2, notebook=nb))
+                loader2.load()
+                if not loader2.hooks and not loader2.tools:
+                    typer.echo("No plugins loaded.")
+                else:
+                    for h in loader2.hooks:
+                        typer.echo(f"  {h._name}: {list(h.tools.keys())}")
+            elif cmd == "/agents":
+                from opennote.agents.defs import AgentRegistry as AR2
+                reg3 = AR2.discover()
+                for a in reg3.list():
+                    typer.echo(f"  {a.name:<15} [{a.mode}] {a.description[:70]}")
+            elif cmd == "/agent":
+                if not arg:
+                    typer.echo("Usage: /agent <name>")
+                    continue
+                from opennote.agents.defs import AgentRegistry as AR3
+                reg4 = AR3.discover()
+                ag = reg4.get(arg)
+                if ag is None:
+                    typer.echo(f"Agent '{arg}' not found.")
+                    continue
+                typer.echo(f"Agent: {ag.name} [{ag.mode}] {ag.description}\n")
+                typer.echo(ag.prompt[:3000] if ag.prompt else "(no prompt)")
+            elif cmd == "/capabilities":
+                from opennote.capabilities import get_capabilities as _gc2
+                c = _gc2()
+                typer.echo(f"web_search: {c.web_search}  supermemory: {getattr(c, 'supermemory_available', False)}")
+                typer.echo(f"skills: {getattr(c, 'skills_available', False)} ({getattr(c, 'skills_count', 0)})")
+                typer.echo(f"plugins: {getattr(c, 'plugins_loaded', [])}")
+                typer.echo(f"agents: {getattr(c, 'agents_available', [])}")
             else:
                 typer.echo("Unknown command. Type /help for available commands.")
             continue
@@ -487,6 +549,144 @@ def local_cmd(
         except KeyError as e:
             typer.echo(str(e), err=True)
             raise typer.Exit(1)
+
+
+@app.command("skills")
+def skills_cmd(
+    action: str = typer.Argument("list", help="Action: list, show"),
+    name: Optional[str] = typer.Argument(None, help="Skill name (for 'show')."),
+):
+    """List or inspect installed agent skills (SKILL.md)."""
+    from opennote.skills.registry import SkillRegistry
+
+    if action == "list":
+        reg = SkillRegistry.discover()
+        skills = reg.list()
+        if not skills:
+            typer.echo("No skills installed.")
+            typer.echo("Install via: npx skills add <owner/repo> -a codex   (lands in .agents/skills/)")
+            typer.echo("Scanned: ./skills/, ./.agents/skills/, ./.claude/skills/, ./.opennote/skills/, ~/.agents/skills/, ~/.claude/skills/, ~/.opennote/skills/")
+            return
+        for s in skills:
+            typer.echo(f"  {s.name:<25} {s.description[:80]}  ({s.directory})")
+    elif action == "show":
+        if not name:
+            typer.echo("Usage: opennote skills show <name>", err=True)
+            raise typer.Exit(1)
+        reg = SkillRegistry.discover()
+        skill = reg.get(name)
+        if skill is None:
+            typer.echo(f"Skill '{name}' not found. Available: {', '.join(reg.names()) or 'none'}", err=True)
+            raise typer.Exit(1)
+        typer.echo(f"Name: {skill.name}")
+        typer.echo(f"Description: {skill.description}")
+        typer.echo(f"Directory: {skill.directory}")
+        if skill.frontmatter.get("license"):
+            typer.echo(f"License: {skill.frontmatter['license']}")
+        if skill.frontmatter.get("compatibility"):
+            typer.echo(f"Compatibility: {skill.frontmatter['compatibility']}")
+        typer.echo("")
+        typer.echo(skill.body[:4000])
+        if skill.files:
+            typer.echo("\nBundled files:")
+            for f in skill.files[:30]:
+                typer.echo(f"  {f}")
+    else:
+        typer.echo(f"Unknown action '{action}'. Use: list, show", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("plugins")
+def plugins_cmd(
+    action: str = typer.Argument("list", help="Action: list"),
+):
+    """List installed plugins."""
+    from opennote.capabilities import get_capabilities
+    from opennote.plugins.loader import PluginContext, PluginLoader
+
+    if action == "list":
+        caps = get_capabilities()
+        # Trigger loader to populate
+        loader = PluginLoader(PluginContext(capabilities=caps))
+        loader.load()
+        if not loader.hooks and not loader.tools:
+            typer.echo("No plugins loaded.")
+            if not caps.supermemory_available:
+                typer.echo("(tip: set SUPERMEMORY_API_KEY to enable the built-in supermemory plugin)")
+            typer.echo("Place Python plugins in .opennote/plugins/*.py or ~/.opennote/plugins/*.py")
+            return
+        for h in loader.hooks:
+            tools_list = ", ".join(h.tools.keys()) if h.tools else "(no tools)"
+            typer.echo(f"  {h._name}: tools=[{tools_list}]")
+        if not loader.hooks:
+            for tname in loader.tools:
+                typer.echo(f"  tool: {tname}")
+    else:
+        typer.echo(f"Unknown action '{action}'. Use: list", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("agents")
+def agents_cmd(
+    action: str = typer.Argument("list", help="Action: list, show"),
+    name: Optional[str] = typer.Argument(None, help="Agent name (for 'show')."),
+):
+    """List or inspect agent definitions."""
+    from opennote.agents.defs import AgentRegistry
+
+    if action == "list":
+        reg = AgentRegistry.discover()
+        agents = reg.list()
+        for a in agents:
+            mode = a.mode or "all"
+            model = a.model or "-"
+            hidden = " (hidden)" if a.hidden else ""
+            typer.echo(f"  {a.name:<15} [{mode:<8}] {a.description[:70]}{hidden}")
+            if a.model:
+                typer.echo(f"      model={model} temp={a.temperature} src={a.source_path or 'builtin'}")
+    elif action == "show":
+        if not name:
+            typer.echo("Usage: opennote agents show <name>", err=True)
+            raise typer.Exit(1)
+        from opennote.agents.defs import AgentRegistry as AR
+        reg = AR.discover()
+        agent = reg.get(name)
+        if agent is None:
+            typer.echo(f"Agent '{name}' not found. Available: {', '.join(reg.names())}", err=True)
+            raise typer.Exit(1)
+        typer.echo(f"Name: {agent.name}")
+        typer.echo(f"Description: {agent.description}")
+        typer.echo(f"Mode: {agent.mode}")
+        if agent.model:
+            typer.echo(f"Model: {agent.model}")
+        if agent.temperature is not None:
+            typer.echo(f"Temperature: {agent.temperature}")
+        if agent.permission:
+            typer.echo(f"Permission: {agent.permission}")
+        if agent.source_path:
+            typer.echo(f"Source: {agent.source_path}")
+        typer.echo("")
+        typer.echo(agent.prompt[:4000] if agent.prompt else "(no prompt body)")
+    else:
+        typer.echo(f"Unknown action '{action}'. Use: list, show", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("capabilities")
+def capabilities_cmd():
+    """Show runtime capabilities (probes for web search, TTS, skills, plugins, etc.)."""
+    from opennote.capabilities import get_capabilities
+
+    caps = get_capabilities()
+    typer.echo(f"web_search: {caps.web_search}")
+    typer.echo(f"supermemory: {getattr(caps, 'supermemory_available', False)}")
+    typer.echo(f"tts_backend: {caps.tts_backend}")
+    typer.echo(f"tts_available: {caps.tts_available}")
+    typer.echo(f"video_available: {caps.video_available}")
+    typer.echo(f"skills_available: {getattr(caps, 'skills_available', False)} ({getattr(caps, 'skills_count', 0)})")
+    typer.echo(f"plugins_loaded: {getattr(caps, 'plugins_loaded', [])}")
+    typer.echo(f"skill_scripts_allowed: {getattr(caps, 'skill_scripts_allowed', False)}")
+    typer.echo(f"agents_available: {getattr(caps, 'agents_available', [])}")
 
 
 @app.command("version")

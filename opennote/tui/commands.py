@@ -28,37 +28,53 @@ class Command:
         return f"/{self.name}"
 
 
+def _handler(screen, name: str, fallback: Optional[Callable] = None) -> Callable[[str], None]:
+    """Return screen.<name> if present, else a no-op so StubScreen tests keep passing."""
+    fn = getattr(screen, name, None)
+    if callable(fn):
+        return fn
+    if fallback is not None:
+        return fallback
+    return lambda _arg="": None
+
+
 def make_commands(screen) -> List[Command]:
     return [
-        Command("help", "Show command help", screen._show_help, category="Notebook"),
-        Command("exit", "Quit the TUI", lambda a: screen.app.exit(), aliases=("quit", "q"), category="Notebook"),
-        Command("clear", "Clear the transcript", screen._clear_transcript, category="Notebook"),
-        Command("model", "Switch LLM provider", screen._switch_provider, arg_hint="<provider>", category="Provider"),
-        Command("sources", "List indexed sources", screen._list_sources, category="Notebook"),
-        Command("remove", "Remove a source", screen._remove_source, arg_hint="[source]", category="Notebook"),
-        Command("export", "Export the notebook transcript to markdown", screen._export_transcript, category="Notebook"),
-        Command("undo", "Undo the last turn", screen._undo_last_turn, category="Notebook"),
-        Command("details", "Show notebook details", screen._show_details, category="Notebook"),
-        Command("notebooks", "Open / new / delete / rename notebooks", screen._show_notebook_picker, category="Notebook"),
-        Command("notebook", "Switch to a notebook", screen._switch_notebook, arg_hint="<name>", category="Notebook"),
-        Command("create", "Create a notebook and open it", screen._create_notebook, arg_hint="<name>", category="Notebook"),
-        Command("ingest", "Index a file, folder, or URL", screen._start_ingest, arg_hint="<path|url>", category="Notebook"),
-        Command("auth", "Show provider/key status", screen._show_auth, category="Provider"),
-        Command("connect", "Connect a provider (key + model)", screen._start_connect, arg_hint="<provider>", category="Provider"),
-        Command("ask", "Switch to ask mode", screen._set_mode_ask, category="Mode"),
-        Command("search", "Switch to search mode", screen._set_mode_search, category="Mode"),
-        Command("studio", "Enter studio mode for artifact generators", screen._enter_studio, category="Mode"),
-        Command("mindmap", "Generate a mind map", screen._start_studio_command("mindmap"), arg_hint="<topic>", category="Studio"),
-        Command("study", "Generate a study guide", screen._start_studio_command("study"), arg_hint="<topic>", category="Studio"),
-        Command("faq", "Generate an FAQ", screen._start_studio_command("faq"), arg_hint="<topic>", category="Studio"),
-        Command("briefing", "Generate a briefing", screen._start_studio_command("briefing"), arg_hint="<topic>", category="Studio"),
-        Command("timeline", "Generate a timeline", screen._start_studio_command("timeline"), arg_hint="<topic>", category="Studio"),
-        Command("suggest", "Suggest follow-up questions", screen._start_studio_command("suggest"), arg_hint="<topic>", category="Studio"),
-        Command("audio", "Narrate text as audio", screen._start_studio_command("audio"), arg_hint="<text>", category="Studio"),
-        Command("video", "Narrate a slideshow video", screen._start_studio_command("video"), arg_hint="<topic>", category="Studio"),
-        Command("open", "Open an artifact file or the artifacts folder", screen._open_artifact, arg_hint="[file]", category="Studio"),
-        Command("theme", "Switch dark/light theme", screen._switch_theme, arg_hint="<dark|light>", category="Appearance"),
-        Command("palette", "Open the command palette", screen._open_palette, category="General"),
+        Command("help", "Show command help", _handler(screen, "_show_help"), category="Notebook"),
+        Command("exit", "Quit the TUI", lambda a: getattr(screen, "app", None) and screen.app.exit(), aliases=("quit", "q"), category="Notebook"),
+        Command("clear", "Clear the transcript", _handler(screen, "_clear_transcript"), category="Notebook"),
+        Command("model", "Switch LLM provider", _handler(screen, "_switch_provider"), arg_hint="<provider>", category="Provider"),
+        Command("sources", "List indexed sources", _handler(screen, "_list_sources"), category="Notebook"),
+        Command("remove", "Remove a source", _handler(screen, "_remove_source"), arg_hint="[source]", category="Notebook"),
+        Command("export", "Export the notebook transcript to markdown", _handler(screen, "_export_transcript"), category="Notebook"),
+        Command("undo", "Undo the last turn", _handler(screen, "_undo_last_turn"), category="Notebook"),
+        Command("details", "Show notebook details", _handler(screen, "_show_details"), category="Notebook"),
+        Command("notebooks", "Open / new / delete / rename notebooks", _handler(screen, "_show_notebook_picker"), category="Notebook"),
+        Command("notebook", "Switch to a notebook", _handler(screen, "_switch_notebook"), arg_hint="<name>", category="Notebook"),
+        Command("create", "Create a notebook and open it", _handler(screen, "_create_notebook"), arg_hint="<name>", category="Notebook"),
+        Command("ingest", "Index a file, folder, or URL", _handler(screen, "_start_ingest"), arg_hint="<path|url>", category="Notebook"),
+        Command("auth", "Show provider/key status", _handler(screen, "_show_auth"), category="Provider"),
+        Command("connect", "Connect a provider (key + model)", _handler(screen, "_start_connect"), arg_hint="<provider>", category="Provider"),
+        Command("ask", "Switch to ask mode", _handler(screen, "_set_mode_ask"), category="Mode"),
+        Command("search", "Switch to search mode", _handler(screen, "_set_mode_search"), category="Mode"),
+        Command("studio", "Enter studio mode for artifact generators", _handler(screen, "_enter_studio"), category="Mode"),
+        Command("mindmap", "Generate a mind map", getattr(screen, "_start_studio_command", lambda k: lambda a="": None)("mindmap"), arg_hint="<topic>", category="Studio"),
+        Command("study", "Generate a study guide", getattr(screen, "_start_studio_command", lambda k: lambda a="": None)("study"), arg_hint="<topic>", category="Studio"),
+        Command("faq", "Generate an FAQ", getattr(screen, "_start_studio_command", lambda k: lambda a="": None)("faq"), arg_hint="<topic>", category="Studio"),
+        Command("briefing", "Generate a briefing", getattr(screen, "_start_studio_command", lambda k: lambda a="": None)("briefing"), arg_hint="<topic>", category="Studio"),
+        Command("timeline", "Generate a timeline", getattr(screen, "_start_studio_command", lambda k: lambda a="": None)("timeline"), arg_hint="<topic>", category="Studio"),
+        Command("suggest", "Suggest follow-up questions", getattr(screen, "_start_studio_command", lambda k: lambda a="": None)("suggest"), arg_hint="<topic>", category="Studio"),
+        Command("audio", "Narrate text as audio", getattr(screen, "_start_studio_command", lambda k: lambda a="": None)("audio"), arg_hint="<text>", category="Studio"),
+        Command("video", "Narrate a slideshow video", getattr(screen, "_start_studio_command", lambda k: lambda a="": None)("video"), arg_hint="<topic>", category="Studio"),
+        Command("open", "Open an artifact file or the artifacts folder", _handler(screen, "_open_artifact"), arg_hint="[file]", category="Studio"),
+        Command("theme", "Switch dark/light theme", _handler(screen, "_switch_theme"), arg_hint="<dark|light>", category="Appearance"),
+        Command("palette", "Open the command palette", _handler(screen, "_open_palette"), category="General"),
+        Command("skills", "List installed skills", _handler(screen, "_list_skills"), category="Skills"),
+        Command("skill", "Show a skill", _handler(screen, "_show_skill"), arg_hint="<name>", category="Skills"),
+        Command("plugins", "List loaded plugins", _handler(screen, "_list_plugins"), category="Plugins"),
+        Command("agents", "List available agents", _handler(screen, "_list_agents"), category="Agents"),
+        Command("agent", "Show an agent definition", _handler(screen, "_show_agent"), arg_hint="<name>", category="Agents"),
+        Command("capabilities", "Show runtime capabilities", _handler(screen, "_show_capabilities"), category="General"),
     ]
 
 

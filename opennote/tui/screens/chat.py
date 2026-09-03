@@ -772,6 +772,99 @@ class ChatScreen(Screen):
             lines.append("  (no provider configured)")
         self.app.push_screen(InfoDialog("Details", "\n".join(lines)))
 
+    def _list_skills(self, _arg: str = "") -> None:
+        from opennote.skills.registry import SkillRegistry
+        reg = SkillRegistry.discover()
+        skills = reg.list()
+        if not skills:
+            self.transcript.add_info("No skills installed.")
+            self.transcript.add_info("Install: npx skills add <owner/repo> -a codex  (→ .agents/skills/)")
+            return
+        for s in skills:
+            self.transcript.add_info(f"  {s.name:<25} {s.description[:80]}")
+
+    def _show_skill(self, arg: str = "") -> None:
+        name = arg.strip()
+        if not name:
+            self._list_skills("")
+            return
+        from opennote.skills.registry import SkillRegistry
+        reg = SkillRegistry.discover()
+        skill = reg.get(name)
+        if skill is None:
+            self.transcript.add_error(f"Skill '{name}' not found. Try /skills")
+            return
+        lines = [f"Skill: {skill.name}", f"Description: {skill.description}", f"Directory: {skill.directory}", ""]
+        lines.append(skill.body[:3000])
+        if skill.files:
+            lines.append("\nBundled files:")
+            for f in skill.files[:20]:
+                lines.append(f"  {f}")
+        self.app.push_screen(InfoDialog(f"Skill: {skill.name}", "\n".join(lines)))
+
+    def _list_plugins(self, _arg: str = "") -> None:
+        from opennote.capabilities import get_capabilities
+        from opennote.plugins.loader import PluginContext, PluginLoader
+        caps = get_capabilities()
+        loader = PluginLoader(PluginContext(capabilities=caps, notebook=self.notebook, logger=None))
+        loader.load()
+        if not loader.hooks and not loader.tools:
+            self.transcript.add_info("No plugins loaded.")
+            if not getattr(caps, "supermemory_available", False):
+                self.transcript.add_info("(tip: set SUPERMEMORY_API_KEY to enable supermemory)")
+            return
+        for h in loader.hooks:
+            tools_list = ", ".join(h.tools.keys()) if h.tools else "(no tools)"
+            self.transcript.add_info(f"  {h._name}: [{tools_list}]")
+        for tname in loader.tools:
+            if not any(tname in h.tools for h in loader.hooks):
+                self.transcript.add_info(f"  tool: {tname}")
+
+    def _list_agents(self, _arg: str = "") -> None:
+        from opennote.agents.defs import AgentRegistry
+        reg = AgentRegistry.discover()
+        for a in reg.list():
+            hidden = " (hidden)" if a.hidden else ""
+            self.transcript.add_info(f"  {a.name:<15} [{a.mode:<8}] {a.description[:70]}{hidden}")
+
+    def _show_agent(self, arg: str = "") -> None:
+        name = arg.strip()
+        if not name:
+            self._list_agents("")
+            return
+        from opennote.agents.defs import AgentRegistry
+        reg = AgentRegistry.discover()
+        agent = reg.get(name)
+        if agent is None:
+            self.transcript.add_error(f"Agent '{name}' not found. Try /agents")
+            return
+        lines = [f"Agent: {agent.name}", f"Mode: {agent.mode}", f"Description: {agent.description}"]
+        if agent.model:
+            lines.append(f"Model: {agent.model}")
+        if agent.temperature is not None:
+            lines.append(f"Temperature: {agent.temperature}")
+        if agent.permission:
+            lines.append(f"Permission: {agent.permission}")
+        lines.append("")
+        lines.append(agent.prompt[:3000] if agent.prompt else "(no prompt body)")
+        self.app.push_screen(InfoDialog(f"Agent: {agent.name}", "\n".join(lines)))
+
+    def _show_capabilities(self, _arg: str = "") -> None:
+        from opennote.capabilities import get_capabilities
+        caps = get_capabilities()
+        lines = [
+            f"web_search: {caps.web_search}",
+            f"supermemory: {getattr(caps, 'supermemory_available', False)}",
+            f"tts_backend: {caps.tts_backend}",
+            f"tts_available: {caps.tts_available}",
+            f"video_available: {caps.video_available}",
+            f"skills: {getattr(caps, 'skills_available', False)} ({getattr(caps, 'skills_count', 0)})",
+            f"plugins: {getattr(caps, 'plugins_loaded', [])}",
+            f"skill_scripts: {getattr(caps, 'skill_scripts_allowed', False)}",
+            f"agents: {getattr(caps, 'agents_available', [])}",
+        ]
+        self.app.push_screen(InfoDialog("Capabilities", "\n".join(lines)))
+
     def _set_mode_ask(self, _arg: str = "") -> None:
         self._set_mode("ask")
 

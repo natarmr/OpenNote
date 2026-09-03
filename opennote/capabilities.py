@@ -36,6 +36,22 @@ class Capabilities:
     # --- Artifacts dir ---
     artifacts_dir: Optional[str] = None  # path as string, or None
 
+    # --- Skills ---
+    skills_available: bool = False
+    skills_count: int = 0
+
+    # --- Plugins ---
+    plugins_loaded: List[str] = field(default_factory=list)
+
+    # --- Supermemory ---
+    supermemory_available: bool = False  # True when SUPERMEMORY_API_KEY is set
+
+    # --- Skill scripts ---
+    skill_scripts_allowed: bool = False  # True when OPENNOTE_ALLOW_SKILL_SCRIPTS=1
+
+    # --- Agents ---
+    agents_available: List[str] = field(default_factory=list)
+
 
 def _env_bool(name: str) -> bool:
     return os.environ.get(name, "").lower() in ("1", "true", "yes", "on")
@@ -60,6 +76,41 @@ def _probe() -> Capabilities:
     # --- Artifacts dir ---
     # Convention: notebook/<name>/artifacts/ — set by the caller (loop.py)
     caps.artifacts_dir = None  # filled in per invocation
+
+    # --- Supermemory ---
+    caps.supermemory_available = bool(os.environ.get("SUPERMEMORY_API_KEY"))
+
+    # --- Skill scripts ---
+    caps.skill_scripts_allowed = _env_bool("OPENNOTE_ALLOW_SKILL_SCRIPTS")
+
+    # --- Skills (lightweight probe — just count, no full parse) ---
+    try:
+        from opennote.skills.registry import SkillRegistry
+
+        reg = SkillRegistry.discover()
+        caps.skills_available = not reg.is_empty()
+        caps.skills_count = len(reg.list())
+    except Exception:
+        pass
+
+    # --- Plugins ---
+    try:
+        from opennote.plugins.loader import PluginLoader, PluginContext
+
+        loader = PluginLoader(PluginContext(capabilities=caps))
+        loader.load()
+        caps.plugins_loaded = sorted(loader.tools.keys())
+    except Exception:
+        pass
+
+    # --- Agents ---
+    try:
+        from opennote.agents.defs import AgentRegistry
+
+        areg = AgentRegistry.discover()
+        caps.agents_available = areg.names()
+    except Exception:
+        pass
 
     return caps
 
@@ -110,5 +161,10 @@ if __name__ == "__main__":  # pragma: no cover
         f"tts_backend: {caps.tts_backend}",
         f"tts_available: {caps.tts_available}",
         f"video_available: {caps.video_available}",
+        f"skills_available: {caps.skills_available} ({caps.skills_count})",
+        f"plugins_loaded: {caps.plugins_loaded}",
+        f"supermemory_available: {caps.supermemory_available}",
+        f"skill_scripts_allowed: {caps.skill_scripts_allowed}",
+        f"agents_available: {caps.agents_available}",
     ]
     print("\n".join(lines))

@@ -6,6 +6,7 @@ appends the result to the conversation, and repeats (up to ``max_rounds``).
 When the model finally produces a plain answer (no tool calls) the loop
 validates citations, appends the Sources footer, and returns an ``AskResult``.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,7 +15,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from opennote.agents.tools import TOOL_SCHEMAS, execute_tool, render_tool_results
+from opennote.agents.tools import TOOL_SCHEMAS, ToolContext, execute_tool, get_tool_schemas, render_tool_results
 from opennote.capabilities import get_capabilities, set_cached, FakeCapability
 from opennote.chat.ask import AskResult
 from opennote.chat.citations import used_sources
@@ -159,24 +160,88 @@ def agent_turn(
 
     caps = get_capabilities()
 
-    # --- Filter tools based on what the runtime can actually do ---
-    available_tools: Dict[str, dict] = {}
+    # --- Build registries and ToolContext ---
+    skill_registry = None
+    plugin_loader = None
+    agent_registry = None
+    try:
+        from opennote.skills.registry import SkillRegistry
+        skill_registry = SkillRegistry.discover()
+    except Exception:
+        pass
+    try:
+        from opennote.agents.defs import AgentRegistry
+        agent_registry = AgentRegistry.discover()
+    except Exception:
+        pass
+    try:
+        from opennote.plugins.loader import PluginContext, PluginLoader
+        plugin_loader = PluginLoader(PluginContext(capabilities=caps, notebook=notebook, logger=logger))
+        plugin_loader.load()
+    except Exception:
+        pass
+
+    tool_ctx = ToolContext(
+        retriever=retriever,
+        notebook=notebook,
+        capabilities=caps,
+        skill_registry=skill_registry,
+        plugin_loader=plugin_loader,
+        agent_registry=agent_registry,
+        client=client,
+        history=history,
+    )
+
+    # --- Build available tools (core + dynamic) filtered by capabilities ---
+    # Core tools filtered first
+    core_filtered: Dict[str, dict] = {}
     for name, schema in TOOL_SCHEMAS.items():
-        # web_search is only available when TAVILY_API_KEY is set
         if name == "web_search" and not caps.web_search:
             continue
-        # explain_audio/explain_video are always advertised; they degrade
-        # internally (not in current TOOL_SCHEMAS, but the pattern exists).
-        available_tools[name] = schema
+        core_filtered[name] = schema
+
+    # Dynamic tools (skill, task, plugin, run_skill_script)
+    dynamic_schemas: Dict[str, dict] = {}
+    try:
+        dynamic_schemas = get_tool_schemas(tool_ctx)
+        # Remove core ones already handled (get_tool_schemas includes them)
+        for k in list(TOOL_SCHEMAS.keys()):
+            dynamic_schemas.pop(k, None)
+    except Exception:
+        dynamic_schemas = {}
+
+    # Filter dynamic by capabilities
+    available_tools: Dict[str, dict] = dict(core_filtered)
+    for tname, tschema in dynamic_schemas.items():
+        # Gate memory_search (supermemory) — only when key present
+        if tname == "memory_search" and not getattr(caps, "supermemory_available", False):
+            continue
+        available_tools[tname] = tschema
 
     # --- Build a capabilities line for the system prompt ---
     cap_parts: List[str] = []
     if caps.web_search:
         cap_parts.append("web search (Tavily)")
+    if getattr(caps, "supermemory_available", False):
+        cap_parts.append("memory search (Supermemory)")
     if caps.tts_available:
         cap_parts.append(f"TTS ({caps.tts_backend})")
     if caps.video_available:
         cap_parts.append("video (narrated slideshow)")
+    if getattr(caps, "skills_available", False):
+        n = getattr(caps, "skills_count", 0)
+        cap_parts.append(f"skills ({n} installed)")
+        # Append skill names for visibility
+        if skill_registry and not skill_registry.is_empty():
+            cap_parts.append(f"skills: {', '.join(skill_registry.names())}")
+    if getattr(caps, "plugins_loaded", None):
+        if caps.plugins_loaded:
+            cap_parts.append(f"plugins: {', '.join(caps.plugins_loaded)}")
+    # Agent modes — list primary agents
+    if agent_registry:
+        primaries = [a.name for a in agent_registry.list(mode="primary")]
+        if primaries:
+            cap_parts.append(f"agents: {', '.join(primaries)}")
     if not cap_parts:
         cap_parts.append("no additional features")
     capabilities_line = (
@@ -299,7 +364,15 @@ def agent_turn(
         )
         for tc in response.tool_calls:
             try:
-                payload = execute_tool(tc.name, retriever, tc.arguments)
+                payload = execute_tool(tc.name, tool_ctx, tc.arguments)
+                # Handle subagent retrieved merge (task tool side-channel)
+                if hasattr(tool_ctx, "_subagent_retrieved") and getattr(tool_ctx, "_subagent_retrieved"):
+                    extra = list(getattr(tool_ctx, "_subagent_retrieved"))
+                    # Extend parent retrieved with subagent chunks for citation validation
+                    # (offset numbering will account for this in next tool results)
+                    retrieved.extend(extra)
+                    # Clear after merging
+                    tool_ctx._subagent_retrieved = []  # type: ignore[attr-defined]
                 if isinstance(payload, list) and all(
                     isinstance(r, SearchResult) for r in payload
                 ):
@@ -347,4 +420,12 @@ def agent_turn(
         model=client.model,
     )
     messages.append({"role": "assistant", "content": answer})
+
+    # Fire plugin on_turn_complete hooks (best-effort, never fails the turn)
+    if plugin_loader is not None:
+        try:
+            plugin_loader.fire_on_turn_complete(result)
+        except Exception:
+            pass
+
     return AgentResult(result=result, messages=messages, rounds_used=rounds_used)

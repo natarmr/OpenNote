@@ -126,6 +126,24 @@ class Retriever:
         }
         return sorted(filenames)
 
+    def close(self) -> None:
+        """Release underlying Chroma resources (Windows file lock)."""
+        try:
+            if hasattr(self, "_mgr") and self._mgr is not None:
+                self._mgr.close()
+        except Exception:
+            pass
+        try:
+            self._mgr = None  # type: ignore[assignment]
+        except Exception:
+            pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 def render_results(results: List[SearchResult], max_lines: int = 10) -> str:
     """Render SearchResults as a human-readable block with citations."""

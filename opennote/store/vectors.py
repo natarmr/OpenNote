@@ -15,6 +15,9 @@ DEFAULT_EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 _MODEL_CACHE: Dict[tuple[str, str], Any] = {}
 
 
+_OPEN_MANAGERS: dict[str, list["VectorStoreManager"]] = {}
+
+
 class VectorStoreManager:
     """
     Manages local SentenceTransformer embeddings and ChromaDB storage with
@@ -53,6 +56,11 @@ class VectorStoreManager:
         self.collection = self._resolve_collection(force_reindex, read_only)
 
         self.manifest = Manifest(self.manifest_file)
+        # Track open managers so NotebookManager.delete can close them on Windows
+        try:
+            _OPEN_MANAGERS.setdefault(str(self.store_dir.resolve()), []).append(self)
+        except Exception:
+            pass
 
     def _load_embedding_model(self):
         """Load the embedding model, preferring a cached local copy."""
@@ -159,9 +167,12 @@ class VectorStoreManager:
         ids = [c.chunk_id for c in chunks]
 
         from tqdm import tqdm
+        import os as _os
+        import sys as _sys
 
+        _disable_tqdm = _os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS") == "1" or not _sys.stderr.isatty()
         total_inserted = 0
-        for i in tqdm(range(0, len(texts), batch_size), desc="Embedding & Ingesting"):
+        for i in tqdm(range(0, len(texts), batch_size), desc="Embedding & Ingesting", disable=_disable_tqdm):
             batch_texts = texts[i : i + batch_size]
             batch_metas = metadatas[i : i + batch_size]
             batch_ids = ids[i : i + batch_size]
@@ -224,3 +235,54 @@ class VectorStoreManager:
                     }
                 )
         return formatted
+
+    def close(self) -> None:
+        """Release ChromaDB resources (important on Windows to avoid WinError 32)."""
+        try:
+            # Untrack first so delete() won't see us as still-open
+            lst = _OPEN_MANAGERS.get(str(self.store_dir.resolve()), [])
+            if self in lst:
+                lst.remove(self)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "chroma_client") and self.chroma_client is not None:
+                c = self.chroma_client
+                self.chroma_client = None  # type: ignore[assignment]
+                self.collection = None  # type: ignore[assignment]
+                if hasattr(c, "close"):
+                    c.close()
+                elif hasattr(c, "_system") and hasattr(c._system, "stop"):
+                    try:
+                        c._system.stop()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+def close_all_for_path(store_dir: Path) -> None:
+    """Close any VectorStoreManager instances holding *store_dir* (Windows)."""
+    try:
+        key = str(Path(store_dir).resolve())
+    except Exception:
+        key = str(store_dir)
+    for mgr in list(_OPEN_MANAGERS.get(key, [])):
+        try:
+            mgr.close()
+        except Exception:
+            pass
+    _OPEN_MANAGERS.pop(key, None)
+    # Also force GC to release any transient BM25 clients
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass

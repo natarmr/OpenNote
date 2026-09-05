@@ -16,26 +16,60 @@ from opennote.auth.cli import auth_app
 from opennote.chat.ask import ask
 from opennote.chat.client import ChatError, default_provider, get_client
 from opennote.ingest.pipeline import ingest as run_ingest
-from opennote.notebooks import Notebook, NotebookManager, current_project
+from opennote.notebooks import Notebook, NotebookManager, current_project, resolve_home
 from opennote.retrieval.retriever import Retriever, render_results
 from opennote.transcript import load_transcript
 
 app = typer.Typer(help="OpenNote - grounded, cited Q&A over your own sources.")
-manager = NotebookManager()
+
+
+def get_manager() -> NotebookManager:
+    """Create a NotebookManager resolved to the current working directory.
+
+    Because cwd may change between CLI invocations (e.g. ``cd opennote && opennote create nb``),
+    we instantiate fresh each time so ``default_home()`` picks up the correct project-local
+    ``./.opennote`` rather than a stale capture from import time.
+    """
+    return NotebookManager(home=resolve_home())
 app.add_typer(auth_app, name="auth")
+
+def _configure_cli_logging() -> None:
+    if logging.getLogger().handlers:
+        return
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
+def _configure_tui_logging() -> None:
+    # TUI runs in alternate screen — console handlers corrupt rendering.
+    # Use NullHandler / WARNING level and suppress HF/docling progress bars.
+    root = logging.getLogger()
+    if not root.handlers:
+        root.addHandler(logging.NullHandler())
+    root.setLevel(logging.WARNING)
+    for name in ("docling", "docling_defaults", "huggingface_hub", "sentence_transformers", "chromadb", "opennote"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+        logging.getLogger(name).propagate = False
+        if not logging.getLogger(name).handlers:
+            logging.getLogger(name).addHandler(logging.NullHandler())
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    os.environ.setdefault("DOCLING_DISABLE_CUDA", "1")
+
 
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context, light: bool = False):
     if ctx.invoked_subcommand is None:
+        _configure_tui_logging()
         from opennote.tui.app import main as tui_main
 
         tui_main(light=light)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+        return
+    _configure_cli_logging()
 
 for _stream in (sys.stdout, sys.stderr, sys.stdin):
     if hasattr(_stream, "reconfigure"):
@@ -49,24 +83,24 @@ def _notebook(name: Optional[str], create_if_missing: bool = False) -> Notebook:
     # Explicit name
     if name:
         try:
-            return manager.get(name)
+            return get_manager().get(name)
         except KeyError:
             if create_if_missing:
                 typer.echo(f"Creating notebook '{name}'...")
-                return manager.create(name, project=current_project())
+                return get_manager().create(name, project=current_project())
             raise typer.BadParameter(
                 f"Notebook '{name}' does not exist. Run 'opennote create {name}' first."
             )
         except ValueError as e:
             raise typer.BadParameter(str(e))
     # No name: most recent for this directory
-    notebooks = manager.list_for_project(current_project())
+    notebooks = get_manager().list_for_project(current_project())
     if notebooks:
         return notebooks[0]
     if create_if_missing:
-        auto = manager.next_notebook_name(current_project())
+        auto = get_manager().next_notebook_name(current_project())
         typer.echo(f"Creating notebook '{auto}'...")
-        return manager.create(auto, project=current_project())
+        return get_manager().create(auto, project=current_project())
     raise typer.BadParameter(
         "No notebooks for this directory. Run 'opennote create <name>' or 'opennote ingest <path>'."
     )
@@ -81,7 +115,7 @@ def create(
 ):
     """Create a new notebook."""
     try:
-        manager.create(name, embed_model=model, project=current_project())
+        get_manager().create(name, embed_model=model, project=current_project())
     except (FileExistsError, ValueError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -93,7 +127,7 @@ def list_notebooks(
     all: bool = typer.Option(False, "--all", help="List all notebooks (all directories)."),
 ):
     """List notebooks."""
-    notebooks = manager.list() if all else manager.list_for_project(current_project())
+    notebooks = get_manager().list() if all else get_manager().list_for_project(current_project())
     if not notebooks:
         typer.echo("No notebooks found. Run 'opennote create <name>'.")
         return
@@ -107,7 +141,7 @@ def list_notebooks(
 def delete(name: str = typer.Argument(..., help="Name of the notebook to delete.")):
     """Delete a notebook and its data."""
     try:
-        manager.delete(name)
+        get_manager().delete(name)
     except (KeyError, ValueError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -121,7 +155,7 @@ def rename(
 ):
     """Rename a notebook."""
     try:
-        manager.rename(old, new)
+        get_manager().rename(old, new)
     except (KeyError, FileExistsError, ValueError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -306,8 +340,8 @@ def chat_cmd(
         nb = _notebook(None)
     else:
         # Bare chat: create a fresh notebook in this directory
-        auto = manager.next_notebook_name(current_project())
-        nb = manager.create(auto, project=current_project())
+        auto = get_manager().next_notebook_name(current_project())
+        nb = get_manager().create(auto, project=current_project())
         typer.echo(f"Started notebook '{nb.name}'.")
 
     try:

@@ -16,7 +16,7 @@ def cli_mod(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENNOTE_HOME", str(home))
     import opennote.cli as mod
 
-    monkeypatch.setattr(mod, "manager", NotebookManager(home=home))
+    monkeypatch.setattr(mod, "get_manager", lambda: NotebookManager(home=home))
     return mod
 
 
@@ -34,7 +34,7 @@ def test_auth_verify_unknown_provider_friendly_error(cli_mod):
 
 
 def test_search_empty_notebook_friendly_error(cli_mod):
-    cli_mod.manager.create("default")
+    cli_mod.get_manager().create("default")
     result = runner.invoke(cli_mod.app, ["search", "-n", "default", "anything"])
     assert result.exit_code == 1
     assert "Error:" in result.output
@@ -42,7 +42,7 @@ def test_search_empty_notebook_friendly_error(cli_mod):
 
 
 def test_golden_empty_notebook_friendly_error(cli_mod, tmp_path):
-    cli_mod.manager.create("default")
+    cli_mod.get_manager().create("default")
     golden = tmp_path / "g.tsv"
     golden.write_text("q\tsrc\n", encoding="utf-8")
     result = runner.invoke(cli_mod.app, ["golden", "-n", "default", str(golden)])
@@ -51,7 +51,7 @@ def test_golden_empty_notebook_friendly_error(cli_mod, tmp_path):
 
 
 def test_chat_loads_transcript_history(cli_mod, monkeypatch):
-    nb = cli_mod.manager.create("default")
+    nb = cli_mod.get_manager().create("default")
     append_messages(nb, [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}])
     monkeypatch.setattr(cli_mod, "default_provider", lambda: "groq")
     monkeypatch.setattr(cli_mod, "get_client", lambda pid: FakeClient())
@@ -61,7 +61,7 @@ def test_chat_loads_transcript_history(cli_mod, monkeypatch):
 
 
 def test_chat_slash_model_tab_parsed(cli_mod, monkeypatch):
-    nb = cli_mod.manager.create("default")
+    nb = cli_mod.get_manager().create("default")
     monkeypatch.setattr(cli_mod, "default_provider", lambda: "groq")
     monkeypatch.setattr(cli_mod, "get_client", lambda pid: FakeClient(provider_id=pid))
     result = runner.invoke(cli_mod.app, ["chat", "-n", "default"], input="/model\tgroq\n/exit\n")
@@ -69,11 +69,11 @@ def test_chat_slash_model_tab_parsed(cli_mod, monkeypatch):
 
 
 def test_chat_slash_model_updates_notebook_metadata(cli_mod, monkeypatch):
-    nb = cli_mod.manager.create("default")
+    nb = cli_mod.get_manager().create("default")
     monkeypatch.setattr(cli_mod, "default_provider", lambda: "groq")
     monkeypatch.setattr(cli_mod, "get_client", lambda pid: FakeClient(provider_id=pid))
     runner.invoke(cli_mod.app, ["chat", "-n", "default"], input="/model openai\n/exit\n")
-    reloaded = cli_mod.manager.get("default")
+    reloaded = cli_mod.get_manager().get("default")
     assert reloaded.provider_id == "openai"
     assert reloaded.model == "openai/gpt-oss-120b"
 
@@ -81,7 +81,7 @@ def test_chat_slash_model_updates_notebook_metadata(cli_mod, monkeypatch):
 def test_chat_survives_loop_network_error(cli_mod, monkeypatch):
     import opennote.agents.loop as loop_mod
 
-    nb = cli_mod.manager.create("default")
+    nb = cli_mod.get_manager().create("default")
     monkeypatch.setattr(cli_mod, "default_provider", lambda: "groq")
     monkeypatch.setattr(cli_mod, "get_client", lambda pid: FakeClient())
 
@@ -103,7 +103,7 @@ def test_ingest_cap_rejected(cli_mod, tmp_path, monkeypatch):
     """Ingesting a 6th distinct source is rejected."""
     from unittest.mock import MagicMock
 
-    nb = cli_mod.manager.create("default")
+    nb = cli_mod.get_manager().create("default")
     for i in range(5):
         nb.sources.append(f"/tmp/src{i}.txt")
     nb.save()
@@ -124,11 +124,11 @@ def test_ingest_cap_rejected(cli_mod, tmp_path, monkeypatch):
 
 
 def test_remove_source_cmd(cli_mod):
-    nb = cli_mod.manager.create("default")
+    nb = cli_mod.get_manager().create("default")
     nb.sources.append("/tmp/a.txt")
     nb.save()
     result = runner.invoke(cli_mod.app, ["remove", "a.txt", "-n", "default"])
     assert result.exit_code == 0
     assert "Removed" in result.output
-    reloaded = cli_mod.manager.get("default")
+    reloaded = cli_mod.get_manager().get("default")
     assert "/tmp/a.txt" not in reloaded.sources

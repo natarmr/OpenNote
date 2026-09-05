@@ -24,6 +24,23 @@ class DoclingParser(SourceParser):
     def __init__(self, do_ocr: bool = False):
         self.do_ocr = do_ocr
         try:
+            import os as _os
+            import shutil as _shutil
+
+            # Windows without VS Build Tools has no C++ compiler — torch inductor
+            # (used by docling's layout model when compile_torch_models=True)
+            # raises InvalidCxxCompiler and makes every ingest return 0 chunks.
+            # Disable compilation up front so the model still runs on CPU.
+            if _os.name == "nt" and _shutil.which("cl") is None and _shutil.which("clang") is None:
+                _os.environ.setdefault("DOCLING_INFERENCE__COMPILE_TORCH_MODELS", "false")
+                try:
+                    from docling.datamodel import settings as _dl_settings
+
+                    _dl_settings.settings.inference.compile_torch_models = False
+                except Exception:
+                    pass
+                logger.info("No C++ compiler found — disabled Docling torch.compile to avoid inductor failure.")
+
             from docling.document_converter import (
                 DocumentConverter,
                 PdfFormatOption,
@@ -57,7 +74,16 @@ class DoclingParser(SourceParser):
         logger.info(
             f"Parsing '{file_path.name}' with Docling layout parser (OCR={self.do_ocr})..."
         )
-        result = self.converter.convert(file_path)
+        try:
+            result = self.converter.convert(file_path)
+        except Exception as e:
+            # Only auto-fallback for missing C++ compiler / inductor. Other
+            # failures (model not cached, corrupted PDF) should surface as
+            # ingest errors so the user sees why docling didn't run.
+            msg = str(e)
+            if "InvalidCxxCompiler" in msg or "C++" in msg or "Inductor" in msg or ("compiler" in msg.lower() and "c++" in msg.lower()):
+                raise RuntimeError(f"Docling layout model failed (missing C++ compiler): {e}") from e
+            raise
         doc = result.document
 
         chunks: List[DocumentChunk] = []

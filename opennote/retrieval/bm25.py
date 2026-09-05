@@ -50,25 +50,34 @@ class Bm25Retriever:
 
         client = chromadb.PersistentClient(path=str(self.notebook.store_dir))
         try:
-            collection = client.get_collection("documents")
-        except Exception:
-            # No collection yet -> empty corpus; search returns [].
-            logger.info("No document collection found for %s; BM25 corpus empty.", self.notebook.name)
-            return
-        got = collection.get(include=["documents", "metadatas"])
-        documents = got.get("documents", []) or []
-        metadatas = got.get("metadatas", []) or []
-        ids = got.get("ids", []) or []
-        self._documents = list(documents)
-        self._metadatas = [dict(m or {}) for m in metadatas]
-        self._ids = [str(i) for i in ids]
-        # Tokenise the corpus once so BM25 scores are word-level, not char-level.
-        self._corpus = [_tokenise(d) for d in self._documents]
-        if self._corpus:
-            self.bm25 = BM25Okapi(self._corpus)
-        else:
-            self.bm25 = None
-        logger.info("BM25 corpus loaded: %d chunks for %s.", len(self._documents), self.notebook.name)
+            try:
+                collection = client.get_collection("documents")
+            except Exception:
+                # No collection yet -> empty corpus; search returns [].
+                logger.info("No document collection found for %s; BM25 corpus empty.", self.notebook.name)
+                return
+            got = collection.get(include=["documents", "metadatas"])
+            documents = got.get("documents", []) or []
+            metadatas = got.get("metadatas", []) or []
+            ids = got.get("ids", []) or []
+            self._documents = list(documents)
+            self._metadatas = [dict(m or {}) for m in metadatas]
+            self._ids = [str(i) for i in ids]
+            # Tokenise the corpus once so BM25 scores are word-level, not char-level.
+            self._corpus = [_tokenise(d) for d in self._documents]
+            if self._corpus:
+                self.bm25 = BM25Okapi(self._corpus)
+            else:
+                self.bm25 = None
+            logger.info("BM25 corpus loaded: %d chunks for %s.", len(self._documents), self.notebook.name)
+        finally:
+            try:
+                if hasattr(client, "close"):
+                    client.close()
+                elif hasattr(client, "_system") and hasattr(client._system, "stop"):
+                    client._system.stop()
+            except Exception:
+                pass
 
     def refresh(self) -> None:
         """Rebuild the index from the current store (call after ingest)."""

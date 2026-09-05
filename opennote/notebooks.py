@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
+from opennote.fsutil import walk_worktree_roots
 from opennote.store.vectors import DEFAULT_EMBED_MODEL
 
 COLLECTION_NAME = "documents"
@@ -56,7 +57,9 @@ def default_home() -> Path:
     env = os.environ.get("OPENNOTE_HOME")
     if env:
         return Path(env)
-    return Path.home() / ".opennote"
+    # Default to project-local when no env set; keep backward compat for
+    # callers that pass explicit ``home``.
+    return Path.cwd() / ".opennote"
 
 
 def _norm_project(p: str) -> str:
@@ -73,6 +76,31 @@ def current_project() -> str:
         return str(Path.cwd().resolve())
     except Exception:
         return str(Path.cwd())
+
+
+def resolve_home(cwd: Path | None = None) -> Path:
+    """Return the project-local home for notebook data.
+
+    Priority:
+    1. OPENNOTE_HOME env var (explicit override; tests use this).
+    2. Walk ancestors from *cwd* (or Path.cwd()) up to .git boundary;
+       if an ancestor contains a ``.opennote`` directory, use that.
+    3. Fallback to ``cwd / ".opennote"`` (new project root).
+    """
+    # 1. Explicit env override (used by tests)
+    env = os.environ.get("OPENNOTE_HOME")
+    if env:
+        return Path(env)
+
+    # 2. Walk ancestors looking for a .opennote marker dir
+    start = cwd or Path.cwd()
+    for root in walk_worktree_roots(start):
+        marker = root / ".opennote"
+        if marker.is_dir():
+            return marker
+
+    # 3. Fallback: project-local under cwd
+    return Path.cwd() / ".opennote"
 
 
 @dataclass
@@ -147,7 +175,10 @@ class Notebook:
 
 class NotebookManager:
     def __init__(self, home: Path | None = None):
-        self.home = Path(home) if home else default_home()
+        if home is not None:
+            self.home = Path(home)
+        else:
+            self.home = default_home()
         self.notebooks_dir = self.home / NOTES_DIR_NAME
         self.notebooks_dir.mkdir(parents=True, exist_ok=True)
 
@@ -168,32 +199,22 @@ class NotebookManager:
         return notebooks
 
     def list_for_project(self, project: str | None = None) -> List[Notebook]:
-        """List notebooks for *project* (cwd if None). Legacy notebooks with
-        empty project are visible in every directory."""
+        """List notebooks for *project* (cwd if None)."""
         if project is None:
             project = current_project()
-        norm = _norm_project(project)
-        result: List[Notebook] = []
-        for nb in self.list():
-            if not nb.project:
-                result.append(nb)
-            elif _norm_project(nb.project) == norm:
-                result.append(nb)
-        # Most recently updated first
-        result.sort(key=lambda n: n.updated or n.created, reverse=True)
-        return result
+        # With per-project isolation, list() already returns the resolved project's notebooks.
+        return self.list()
 
     def next_notebook_name(self, project: str | None = None) -> str:
         """Return next free 'notebook-N' name for *project*."""
         if project is None:
             project = current_project()
+        # Only check within the resolved project's directory (local isolation).
         existing = {nb.name for nb in self.list_for_project(project)}
-        # Also check global to avoid collision (names are global unique on disk)
-        existing_global = {nb.name for nb in self.list()}
         n = 1
         while True:
             cand = f"notebook-{n}"
-            if cand not in existing_global:
+            if cand not in existing:
                 return cand
             n += 1
 
@@ -251,9 +272,53 @@ class NotebookManager:
         directory = self.notebooks_dir / name
         if not (directory / "notebook.json").exists():
             raise KeyError(f"Notebook '{name}' does not exist.")
+        import gc
         import shutil
+        import time
 
-        shutil.rmtree(directory)
+        # Release any open Chroma handles for this notebook (Windows WinError 32)
+        try:
+            from opennote.store.vectors import close_all_for_path
+
+            close_all_for_path(directory / "chroma")
+        except Exception:
+            pass
+        gc.collect()
+
+        # Retry loop for Windows file-lock (chroma.sqlite3)
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                shutil.rmtree(directory)
+                return
+            except PermissionError as e:
+                last_exc = e
+                if attempt < 2:
+                    time.sleep(0.3 * (attempt + 1))
+                    gc.collect()
+                    continue
+                # Final attempt with onerror to handle read-only files
+                try:
+                    import os
+
+                    def _onerror(func, path, exc_info):
+                        try:
+                            os.chmod(path, 0o777)
+                            func(path)
+                        except Exception:
+                            pass
+
+                    shutil.rmtree(directory, onerror=_onerror)
+                    return
+                except PermissionError as e2:
+                    chroma_file = directory / "chroma" / "chroma.sqlite3"
+                    raise PermissionError(
+                        f"Cannot delete notebook '{name}': file is in use (chroma.sqlite3 locked, WinError 32). "
+                        f"Close the TUI or any 'opennote search/ask' process holding '{chroma_file}' and try again. "
+                        f"If the TUI is still open, switch to another notebook first, then delete."
+                    ) from e2
+        if last_exc is not None:
+            raise last_exc
 
     def rename(self, old: str, new: str) -> Notebook:
         validate_notebook_name(old)

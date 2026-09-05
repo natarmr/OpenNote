@@ -228,7 +228,27 @@ def ingest(
             if doc_parser is None:
                 logger.warning(f"No parser for '{f.name}'; skipping.")
                 continue
-            chunks = doc_parser.parse(f, spec)
+            try:
+                chunks = doc_parser.parse(f, spec)
+            except Exception as parse_err:
+                # Auto-fallback ONLY for missing C++ compiler / inductor.
+                # Other docling failures should surface to the user.
+                msg = str(parse_err)
+                is_compiler_error = ("InvalidCxxCompiler" in msg or "C++" in msg or "Inductor" in msg or "missing C++ compiler" in msg)
+                is_docling = doc_parser.__class__.__name__ == "DoclingParser"
+                should_fallback = is_docling and parser in ("auto", "docling") and is_compiler_error
+                if should_fallback:
+                    logger.warning(f"Docling failed for '{f.name}' ({parse_err}); falling back to pdfplumber (use --parser fallback to avoid docling)...")
+                    try:
+                        fallback = FallbackPDFParser()
+                        chunks = fallback.parse(f, spec)
+                        if chunks:
+                            logger.info(f"Fallback extracted {len(chunks)} chunk(s) from '{f.name}' (local).")
+                    except Exception as fb_e:
+                        logger.error(f"Fallback also failed for '{f.name}': {fb_e}", exc_info=True)
+                        continue
+                else:
+                    raise
             if not chunks:
                 # The file exists but yields nothing (empty/truncated). Drop any
                 # previously indexed chunks so stale data isn't searchable, and

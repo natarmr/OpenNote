@@ -1,4 +1,4 @@
-"""Transcript: the scrollable conversation log shown above the prompt bar.
+﻿"""Transcript: the scrollable conversation log shown above the prompt bar.
 
 Renders the banner, user messages, assistant answers (markdown), and
 status/error lines into a RichLog so the container handles scrolling.
@@ -28,7 +28,7 @@ class Transcript(RichLog):
 
     def _reveal(self) -> None:
         """Ask the owning ChatScreen to leave the welcome view, if it hasn't
-        already. Safe to call unconditionally — a screen without this hook,
+        already. Safe to call unconditionally ΓÇö a screen without this hook,
         or one that's already revealed, just no-ops."""
         reveal = getattr(self.screen, "_reveal_transcript", None)
         if callable(reveal):
@@ -41,7 +41,7 @@ class Transcript(RichLog):
     def add_user(self, text: str, name: str = "You") -> None:
         self._reveal()
         when = datetime.now().strftime("%H:%M")
-        header = Text(f" {name} · {when} ", style=f"bold {self._color('text', '#d6d6d6')}")
+        header = Text(f" {name} ┬╖ {when} ", style=f"bold {self._color('text', '#d6d6d6')}")
         body = Text(text, style=self._color("text", "#eeeeee"))
         self.write(header)
         self.write(body)

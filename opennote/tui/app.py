@@ -1,4 +1,4 @@
-"""OpenNote TUI application entry point.
+﻿"""OpenNote TUI application entry point.
 
 ``opennote`` with no subcommand launches this app (see ``opennote.cli``).
 """

@@ -1,4 +1,4 @@
-"""Autocomplete popup for slash commands.
+﻿"""Autocomplete popup for slash commands.
 
 Shown while the prompt starts with ``/``; lists matching commands and lets the
 user highlight one with up/down. Tab completes (inserts the command text),

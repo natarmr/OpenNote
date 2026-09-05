@@ -91,7 +91,7 @@ def save_artifact(
     kind: one of "markdown", "study_guide", "faq", "briefing", "timeline", "summary"
     title: display title for the artifact
     body: markdown body content
-    notebook_dir: path to the notebook folder (``~/.opennote/notebooks/<name>``)
+    notebook_dir: path to the notebook folder (``./.opennote/notebooks/<name>`` or ``$OPENNOTE_HOME/notebooks``)
     """
     artifact = Artifact(kind=kind, title=title, body=body)
     ad = _artifacts_dir(notebook_dir)

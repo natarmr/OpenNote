@@ -1,10 +1,10 @@
-"""The opencode-style prompt bar: textarea + meta row + status row.
+﻿"""The opencode-style prompt bar: textarea + meta row + status row.
 
 Layout (bottom of the screen):
-    ┌─ (left border, colored by the current mode)
-    │ Ask anything... "<example>"
-    │ Ask · gpt-oss-120b groq
-    ⣿ Searching sources… round 2/5        esc interrupt
+    ΓöîΓöÇ (left border, colored by the current mode)
+    Γöé Ask anything... "<example>"
+    Γöé Ask ┬╖ gpt-oss-120b groq
+    Γú┐ Searching sourcesΓÇª round 2/5        esc interrupt
 
 The left border and the mode label share the mode color (ask = primary,
 search = secondary). The status row sits below the box and holds a spinner
@@ -126,7 +126,7 @@ class PromptBar(Widget):
             )
         with Horizontal(id="meta-row"):
             yield Label("Ask", id="meta-mode")
-            yield Label("·", id="meta-sep", classes="muted")
+            yield Label("┬╖", id="meta-sep", classes="muted")
             yield Label("", id="meta-model")
             yield Label("", id="meta-provider", classes="muted")
         with Horizontal(id="status-row"):
@@ -193,7 +193,7 @@ class PromptBar(Widget):
         self.hint = hint
         self.busy = True
 
-    def set_idle(self, hint: str = "tab modes · ctrl+p") -> None:
+    def set_idle(self, hint: str = "tab modes ┬╖ ctrl+p") -> None:
         self.status_text = ""
         self.hint = hint
         self.busy = False

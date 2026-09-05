@@ -85,7 +85,9 @@ def test_model_load_prefers_local_files_only(tmp_path, monkeypatch):
             return [[0.0] * 4]
 
     import sentence_transformers
+    from opennote.store.vectors import _MODEL_CACHE
 
+    _MODEL_CACHE.clear()
     monkeypatch.setattr(sentence_transformers, "SentenceTransformer", Recorder)
     VectorStoreManager("documents", tmp_path / "c")
     assert calls and calls[0].get("local_files_only") is True

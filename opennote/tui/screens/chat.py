@@ -1,4 +1,4 @@
-"""Main chat screen: banner + transcript + prompt bar.
+﻿"""Main chat screen: banner + transcript + prompt bar.
 
 Notebook == session. No separate session layer.
 """
@@ -71,10 +71,11 @@ class RoundProgress(Message):
 
 
 class IngestResultMsg(Message):
-    def __init__(self, target: str, count: int) -> None:
+    def __init__(self, target: str, count: int, fallback: bool = False) -> None:
         super().__init__()
         self.target = target
         self.count = count
+        self.fallback = fallback
 
 
 class IngestFailed(Message):
@@ -562,17 +563,17 @@ class ChatScreen(Screen):
 
         fallback_templates = {
             "study": f"Study guide for **{topic}** based on {len(results)} chunks.\n" + "\n".join(
-                f"• {r.metadata.get('filename','unknown')}: {r.content[:80]}" for r in results[:5]),
+                f"ΓÇó {r.metadata.get('filename','unknown')}: {r.content[:80]}" for r in results[:5]),
             "faq": f"FAQ for **{topic}** from {len(results)} sources.\n" + "\n".join(
                 f"Q: What does {r.metadata.get('filename','unknown')} say about {topic}?\nA: {r.content[:100]}" for r in results[:5]),
             "briefing": f"Briefing for **{topic}** from {len(results)} sources.\n" + "\n".join(
-                f"• {r.metadata.get('filename','unknown')}: {r.content[:120]}" for r in results[:5]),
+                f"ΓÇó {r.metadata.get('filename','unknown')}: {r.content[:120]}" for r in results[:5]),
             "timeline": f"Timeline for **{topic}** from {len(results)} sources.\n" + "\n".join(
                 f"- {r.metadata.get('filename','unknown')}: {r.content[:80]}" for r in results[:8]),
             "suggest": f"Suggested questions for **{topic}** from {len(results)} sources.\n" + "\n".join(
-                f"• Suggested question from {r.metadata.get('filename','unknown')}" for r in results[:5]),
-            "mindmap": f"Mind‑map overview for **{topic}**.\n" + "\n".join(
-                f"• {r.metadata.get('filename','unknown')}: {r.content[:50]}" for r in results[:5]),
+                f"ΓÇó Suggested question from {r.metadata.get('filename','unknown')}" for r in results[:5]),
+            "mindmap": f"MindΓÇæmap overview for **{topic}**.\n" + "\n".join(
+                f"ΓÇó {r.metadata.get('filename','unknown')}: {r.content[:50]}" for r in results[:5]),
         }
         body = fallback_templates.get(kind, "")
         art = save_artifact(kind=kind, title=topic, body=body, notebook_dir=notebook.directory)
@@ -683,7 +684,7 @@ class ChatScreen(Screen):
             model = settings.model if settings else None
             if not (resolve_key(p.id) and model):
                 continue
-            items.append((p.id, f"{p.label} · {model}"))
+            items.append((p.id, f"{p.label} ┬╖ {model}"))
         if not items:
             self.transcript.add_info("No provider configured. Run 'opennote auth add <provider>'.")
             return
@@ -767,7 +768,7 @@ class ChatScreen(Screen):
             lines.append("  (no notebook)")
         lines.append("Client:")
         if self._client:
-            lines.append(f"  {self._client.provider_id} · {self._client.model}")
+            lines.append(f"  {self._client.provider_id} ┬╖ {self._client.model}")
         else:
             lines.append("  (no provider configured)")
         self.app.push_screen(InfoDialog("Details", "\n".join(lines)))
@@ -778,7 +779,7 @@ class ChatScreen(Screen):
         skills = reg.list()
         if not skills:
             self.transcript.add_info("No skills installed.")
-            self.transcript.add_info("Install: npx skills add <owner/repo> -a codex  (→ .agents/skills/)")
+            self.transcript.add_info("Install: npx skills add <owner/repo> -a codex  (ΓåÆ .agents/skills/)")
             return
         for s in skills:
             self.transcript.add_info(f"  {s.name:<25} {s.description[:80]}")
@@ -1015,7 +1016,7 @@ class ChatScreen(Screen):
             self.transcript.add_info("No notebooks for this directory. Use 'New notebook'.")
             return
         items = [
-            (nb.name, f"{'*' if self.notebook and nb.name == self.notebook.name else ' '} {nb.name} · {len(nb.sources)}/5 sources · {len(load_transcript(nb))} msgs")
+            (nb.name, f"{'*' if self.notebook and nb.name == self.notebook.name else ' '} {nb.name} ┬╖ {len(nb.sources)}/5 sources ┬╖ {len(load_transcript(nb))} msgs")
             for nb in notebooks
         ]
         item_list(self.app, "Open notebook", items, on_pick=self._on_notebook_picked)
@@ -1097,7 +1098,7 @@ class ChatScreen(Screen):
         if not notebooks:
             self.transcript.add_info("No notebooks to delete.")
             return
-        items = [(nb.name, f"{nb.name} · {len(nb.sources)}/5 sources") for nb in notebooks]
+        items = [(nb.name, f"{nb.name} ┬╖ {len(nb.sources)}/5 sources") for nb in notebooks]
         item_list(self.app, "Delete notebook", items, on_pick=self._on_delete_picked)
 
     def _on_delete_picked(self, name: Optional[str]) -> None:
@@ -1178,22 +1179,52 @@ class ChatScreen(Screen):
     async def _run_ingest(self, target: str) -> None:
         notebook = self.notebook
         try:
-            if self._ingest_fn is not None:
-                count = self._ingest_fn(notebook, target)
-            else:
-                from opennote.ingest.pipeline import ingest as _ingest
+            import contextlib
+            import io
 
-                count = _ingest(notebook, target)
+            # Capture any stdout/stderr / tqdm / docling progress that would
+            # otherwise corrupt the Textual alternate screen. Also capture
+            # pipeline fallback warnings via a temporary logging handler.
+            stdout_buf = io.StringIO()
+            stderr_buf = io.StringIO()
+            fallback_used = False
+
+            class _FallbackHandler(logging.Handler):
+                def emit(self, record):
+                    nonlocal fallback_used
+                    if "falling back" in record.getMessage().lower():
+                        fallback_used = True
+
+            _logger = logging.getLogger("opennote.ingest.pipeline")
+            _handler = _FallbackHandler()
+            _logger.addHandler(_handler)
+            try:
+                with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+                    if self._ingest_fn is not None:
+                        count = self._ingest_fn(notebook, target)
+                    else:
+                        from opennote.ingest.pipeline import ingest as _ingest
+
+                        count = _ingest(notebook, target)
+                    # Also detect fallback via captured stderr (print fallback)
+                    combined = stdout_buf.getvalue() + stderr_buf.getvalue()
+                    if "falling back" in combined.lower():
+                        fallback_used = True
+            finally:
+                _logger.removeHandler(_handler)
         except Exception as e:
             logger.exception("Ingest failed")
-            self.app.call_from_thread(self.post_message, IngestFailed(str(e)))
+            detail = str(e)
+            self.app.call_from_thread(self.post_message, IngestFailed(detail))
             return
         self.app.call_from_thread(
-            self.post_message, IngestResultMsg(target, int(count))
+            self.post_message, IngestResultMsg(target, int(count), fallback=fallback_used)
         )
 
     def on_ingest_result_msg(self, msg: IngestResultMsg) -> None:
         self.transcript.add_info(f"Indexed {msg.count} chunk(s) from {msg.target}")
+        if msg.fallback:
+            self.transcript.add_info("Note: local fallback used (Docling missing C++ compiler). Install VS Build Tools or run /ingest with --parser fallback for consistent behavior.")
         self.prompt.set_idle()
 
     def on_ingest_failed(self, msg: IngestFailed) -> None:
@@ -1213,7 +1244,7 @@ class ChatScreen(Screen):
             settings = config.get(p.id)
             model = settings.model if settings else None
             key = resolve_key(p.id)
-            bits = ["key ✓" if key else "no key"]
+            bits = ["key Γ£ô" if key else "no key"]
             bits.append(f"model {model}" if model else "no model")
             marker = " *" if self._client and p.id == self._client.provider_id else ""
             lines.append(f"  {p.id:<10} {', '.join(bits)}{marker}")
@@ -1295,15 +1326,15 @@ class ChatScreen(Screen):
             models = rank_models(provider, result.models)
         else:
             if result.error == "invalid-key":
-                self.transcript.add_error("Invalid API key — could not fetch models.")
+                self.transcript.add_error("Invalid API key ΓÇö could not fetch models.")
             elif result.error == "network":
                 self.transcript.add_info(
-                    "Could not reach the model catalog — using default models. "
+                    "Could not reach the model catalog ΓÇö using default models. "
                     "Run 'opennote auth verify <provider>' to refresh."
                 )
             else:
                 self.transcript.add_info(
-                    f"Model catalog returned an error ({result.error}) — using default models."
+                    f"Model catalog returned an error ({result.error}) ΓÇö using default models."
                 )
             models = list(provider.preferred_models)
 

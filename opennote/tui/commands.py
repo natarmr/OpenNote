@@ -75,6 +75,7 @@ def make_commands(screen) -> List[Command]:
         Command("agents", "List available agents", _handler(screen, "_list_agents"), category="Agents"),
         Command("agent", "Show an agent definition", _handler(screen, "_show_agent"), arg_hint="<name>", category="Agents"),
         Command("capabilities", "Show runtime capabilities", _handler(screen, "_show_capabilities"), category="General"),
+        Command("context", "Show context usage (tokens, %, spend)", _handler(screen, "_show_context"), category="General"),
     ]
 
 

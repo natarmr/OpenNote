@@ -31,6 +31,7 @@ dependencies = [
     "rank-bm25>=0.2.0",
     "edge-tts>=6.1.0",
     "pyyaml>=6.0",
+    "jinja2>=3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +47,9 @@ opennote = "opennote.cli:app"
 [project.entry-points."opennote.plugins"]
 # Example: myplugin = "mypackage.plugin:register"
 # Plugins can also be placed in .opennote/plugins/*.py or ~/.opennote/plugins/*.py
+
+[tool.setuptools.package-data]
+"opennote.prompt_templates" = ["*.jinja"]
 
 [tool.setuptools.packages.find]
 include = ["opennote*"]

@@ -18,7 +18,7 @@ import hashlib
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from opennote.auth.keychain import resolve_key
 from opennote.auth.registry import get_provider
@@ -67,7 +67,11 @@ def _openai_compat_speech(
         from openai import OpenAI
 
         client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
-        response = client.audio.speech.create(model=model, voice=voice, input=script)
+        # Groq orpheus requires response_format wav
+        kwargs = {"model": model, "voice": voice, "input": script}
+        if backend == "groq":
+            kwargs["response_format"] = "wav"
+        response = client.audio.speech.create(**kwargs)
         raw_bytes = b"".join(chunk for chunk in response.iter_bytes())
         if not raw_bytes:
             return TtsResult(success=False, error=f"{backend} returned empty audio response.", backend=backend)
@@ -98,7 +102,7 @@ def _groq_tts(script: str, output_path: Path) -> TtsResult:
     except Exception:
         base_url = "https://api.groq.com/openai/v1"
     return _openai_compat_speech(
-        script, output_path, api_key=groq_key, model="canopylabs/orpheus-v1-english", voice="tara", base_url=base_url, backend="groq"
+        script, output_path, api_key=groq_key, model="canopylabs/orpheus-v1-english", voice="autumn", base_url=base_url, backend="groq"
     )
 
 
@@ -162,7 +166,7 @@ async def _edge_tts_async(script: str, output_path: Path) -> TtsResult:
     try:
         import edge_tts
 
-        communicate = edge_tts.Communicate(script, "en-US-Neural2-F")
+        communicate = edge_tts.Communicate(script, "en-US-AriaNeural")
 
         # L58: NamedTemporaryFile instead of the racy, deprecated mktemp.
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:

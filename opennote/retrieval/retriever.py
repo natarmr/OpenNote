@@ -39,18 +39,51 @@ class Retriever:
     """Searches a notebook's vector store, returning SearchResult objects.
 
     Constructing a Retriever loads the notebook's embedding model (read-only —
-    it never creates or mutates the collection).
+    it never creates or mutates the collection). When ``top_k`` is ``None``
+    the retriever picks an adaptive value from the corpus size
+    (``engg_choices.md:E2``): 5 if <50 chunks, 8 if <300, else 12.
     """
+
+    ADAPTIVE_THRESHOLDS = [(50, 5), (300, 8)]  # else 12
+    DEFAULT_K_LARGE = 12
 
     def __init__(
         self,
         notebook: Notebook,
-        top_k: int = 5,
+        top_k: Optional[int] = None,
         device: Optional[str] = None,
-        use_bm25: bool = False,
+        use_bm25: bool = True,
         bm25_alpha: float = 0.5,
     ) -> None:
         self.notebook = notebook
+        if top_k is None:
+            try:
+                # Fast count without loading documents — used for adaptive k.
+                import chromadb
+
+                client = chromadb.PersistentClient(path=str(notebook.store_dir))
+                try:
+                    coll = client.get_collection(COLLECTION_NAME)
+                    n = coll.count()
+                except Exception:
+                    n = 0
+                try:
+                    if hasattr(client, "close"):
+                        client.close()
+                    elif hasattr(client, "_system") and hasattr(client._system, "stop"):
+                        client._system.stop()
+                except Exception:
+                    pass
+                for thresh, k in self.ADAPTIVE_THRESHOLDS:
+                    if n < thresh:
+                        top_k = k
+                        break
+                else:
+                    top_k = self.DEFAULT_K_LARGE
+            except Exception:
+                top_k = 8
+        if not isinstance(top_k, int) or top_k < 1:
+            raise ValueError(f"top_k must be a positive integer, got {top_k!r}.")
         self.top_k = top_k
         self._mgr = VectorStoreManager(
             collection_name=COLLECTION_NAME,
@@ -119,9 +152,10 @@ class Retriever:
     def sources(self) -> List[str]:
         """List source filenames currently indexed in the notebook."""
         got = self._mgr.collection.get(include=["metadatas"])
+        metas = got.get("metadatas") or []
         filenames = {
             m.get("filename")
-            for m in got["metadatas"]
+            for m in metas
             if m and m.get("filename")
         }
         return sorted(filenames)

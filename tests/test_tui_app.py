@@ -165,6 +165,129 @@ async def test_ask_submit_runs_agent_and_shows_answer(tmp_path):
         assert client.sent  # agent_turn actually invoked the client
 
 
+BANNER_ROW = "█▀▀█ █▀▀█ █▀▀█ █▀▀▄"
+
+
+async def test_startup_create_opens_with_single_banner(tmp_path):
+    from opennote.tui.dialogs import InputDialog
+    from opennote.tui.screens.chat import ChatScreen
+
+    app = await _make_app(tmp_path, notebook_name=None)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, InputDialog)
+        await pilot.press(*"nb123")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+        assert app.screen.notebook is not None
+        assert app.screen.notebook.name == "nb123"
+        assert _transcript_text(app.screen.transcript).count(BANNER_ROW) == 1
+
+
+async def test_startup_guard_blocks_second_dialog(tmp_path):
+    from opennote.tui.dialogs import InputDialog
+
+    app = await _make_app(tmp_path, notebook_name=None)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, InputDialog)
+        depth_before = len(app.screen_stack)
+        # Direct re-entry while a startup dialog is pending must no-op.
+        chat = next(s for s in app.screen_stack if hasattr(s, "_startup_auto_new"))
+        chat._startup_auto_new()
+        await pilot.pause()
+        assert len(app.screen_stack) == depth_before
+        assert isinstance(app.screen, InputDialog)
+
+
+async def test_startup_invalid_name_single_banner(tmp_path):
+    from opennote.tui.dialogs import InputDialog
+    from opennote.tui.screens.chat import ChatScreen
+
+    app = await _make_app(tmp_path, notebook_name=None)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, InputDialog)
+        await pilot.press(*"bad name!")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+        assert app.screen.notebook is None
+        text = _transcript_text(app.screen.transcript)
+        assert "Cannot create notebook" in text
+        assert text.count(BANNER_ROW) == 1
+
+
+async def test_ask_turn_updates_context_readout(tmp_path):
+    from opennote.chat.client import TokenUsage
+
+    client = ScriptedClient(
+        [ChatResponse(content="The answer is 42.", usage=TokenUsage(prompt_tokens=1000, completion_tokens=50))],
+        provider_id="groq",
+        model="gpt-x",
+    )
+    app = await _make_app(tmp_path, client=client, retriever=FakeRetriever(results=[]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.screen.query_one("#prompt-bar", PromptBar)
+        assert "ctx" in bar.context  # always visible, even before first turn
+        assert "0/" in bar.context
+        await pilot.press(*"what is the meaning")
+        await pilot.press("enter")
+        await _wait_idle(pilot, bar)
+        assert "ctx" in bar.context
+        assert "1,050" in bar.context
+        # /context shows the full panel on demand
+        await pilot.press(*"/context")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        transcript = app.screen.query_one("#transcript")
+        assert "Context" in _transcript_text(transcript)
+
+
+async def test_sidebar_shows_session_context_services(tmp_path):
+    from opennote.tui.widgets.sidebar import SideBar
+
+    app = await _make_app(tmp_path, retriever=FakeRetriever(results=[]))
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        side = app.screen.query_one("#sidebar", SideBar)
+        assert side.display is not False
+        assert side.session_title != ""
+        assert "Context" in side.query_one("#side-context-head").render().plain
+        assert "Services" in side.query_one("#side-services-head").render().plain
+        # ASCII only - no odd glyphs anywhere in the sidebar
+        for lbl in side.query("#side-session-title, #side-context, #side-services, #side-footer-left, #side-footer-right"):
+            text = lbl.render().plain
+            assert "┬" not in text and "Γ" not in text, text
+
+
+async def test_sidebar_hidden_on_narrow_screen(tmp_path):
+    from opennote.tui.widgets.sidebar import SideBar
+
+    app = await _make_app(tmp_path, retriever=FakeRetriever(results=[]))
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        side = app.screen.query_one("#sidebar", SideBar)
+        assert side.display is False
+
+
+async def test_meta_row_spaced_and_short_model(tmp_path):
+    from opennote.tui.widgets.prompt import PromptBar, _short_model
+
+    assert _short_model("models/gemini-3.5-flash") == "gemini-3.5-flash"
+    assert _short_model("openai/gpt-oss-120b") == "gpt-oss-120b"
+    assert _short_model("x" * 40).endswith("~")
+    app = await _make_app(tmp_path, retriever=FakeRetriever(results=[]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.screen.query_one("#prompt-bar", PromptBar)
+        sep = bar.query_one("#meta-sep")
+        assert sep.render().plain.strip() == "|"
+
+
 async def test_search_mode_uses_retriever(tmp_path):
     retriever = FakeRetriever(results=[_result("a.pdf", "some content here")])
     app = await _make_app(tmp_path, retriever=retriever)

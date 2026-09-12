@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import difflib
 import re
-import string
 from typing import Dict, List, Tuple
 
 from opennote.retrieval.retriever import SearchResult
@@ -31,35 +30,39 @@ def fuzzy_contains(chunk_text: str, quote_span: str, threshold: float = 0.85) ->
     norm_quote = _normalize(quote_span)
     if norm_quote in norm_chunk:
         return True
-    # For short quotes, use ratio on best window?
-    # Simple: overall ratio if quote is small relative to chunk, check sliding window
-    # Use difflib to find best ratio
-    if len(norm_quote) < 20:
-        return False
-    # Check if quote appears with minor edits via SequenceMatcher on chunk
-    # Use find longest matching via sliding window of quote length
-    # For performance, just check ratio of quote vs chunk substring via difflib if not exact
-    # Quick approximate: if quote length > chunk, compare whole
     if len(norm_quote) > len(norm_chunk):
         ratio = difflib.SequenceMatcher(None, norm_quote, norm_chunk).ratio()
         return ratio >= threshold
-    # sliding window check - take chunk, check best ratio for quote length window
-    # To avoid O(n*m), use difflib's quick ratio on full chunk if not found
-    ratio = difflib.SequenceMatcher(None, norm_chunk, norm_quote).ratio()
-    # Also check containment with difflib on quote vs chunk's best substring via find
-    # For small performance, if ratio high enough, accept
-    if ratio >= threshold:
-        return True
-    # Fallback: check if quote words mostly appear sequentially
-    # Simple word overlap check
-    quote_words = norm_quote.split()
-    if len(quote_words) < 3:
+    # Sliding-window fuzzy check: compare quote against every chunk window of same length.
+    # This handles paraphrases with minor edits and was previously dead code (always False).
+    n, m = len(norm_chunk), len(norm_quote)
+    if m == 0:
         return False
-    # Check consecutive window
-    chunk_words = norm_chunk.split()
-    # If any window of quote_words length appears in chunk with high overlap, accept
-    # This handles chunk-boundary split partially
-    return False
+    best = 0.0
+    # Step by 15 chars to keep O(n*m/step) reasonable; 30-char windows overlap.
+    step = max(1, m // 4)
+    for start in range(0, n - m + 1, step):
+        window = norm_chunk[start : start + m]
+        ratio = difflib.SequenceMatcher(None, window, norm_quote).ratio()
+        if ratio >= threshold:
+            return True
+        if ratio > best:
+            best = ratio
+    # Also try word-level overlap as fallback for very short quotes
+    quote_words = norm_quote.split()
+    if len(quote_words) >= 3:
+        chunk_words = norm_chunk.split()
+        # check any consecutive word window matches with high overlap
+        qw_set = set(quote_words)
+        for i in range(len(chunk_words) - len(quote_words) + 1):
+            window_words = chunk_words[i : i + len(quote_words)]
+            overlap = len(qw_set & set(window_words)) / len(qw_set)
+            if overlap >= 0.8:
+                return True
+    # Full-chunk ratio as last resort (catches cases where quote ~ chunk length)
+    if best == 0.0:
+        best = difflib.SequenceMatcher(None, norm_chunk, norm_quote).ratio()
+    return best >= threshold
 
 
 def validate_claim(claim: Claim, chunks_by_id: Dict[str, SearchResult], threshold: float = 0.85) -> bool:
@@ -99,7 +102,7 @@ def validate_freeform_answer(answer: str, chunks_by_id: Dict[str, SearchResult])
     ids_in_answer = re.findall(r"\[(\d+)\]", answer)
     if ids_in_answer and any(str(x) in chunks_by_id for x in ids_in_answer):
         return True
-    # Fallback: require substring overlap
+    # Fallback: require substring overlap (overlapping windows, not non-overlapping step=30)
     norm_answer = _normalize(answer)
     for chunk in chunks_by_id.values():
         norm_chunk = _normalize(chunk.content)
@@ -107,8 +110,9 @@ def validate_freeform_answer(answer: str, chunks_by_id: Dict[str, SearchResult])
             if norm_answer in norm_chunk:
                 return True
         else:
-            for i in range(0, len(norm_answer) - 30, 30):
-                window = norm_answer[i:i+30]
+            # overlapping step 15 so windows straddling a 30-boundary are not missed
+            for i in range(0, len(norm_answer) - 30 + 1, 15):
+                window = norm_answer[i : i + 30]
                 if window in norm_chunk:
                     return True
     return False

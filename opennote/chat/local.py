@@ -135,6 +135,14 @@ class LocalLlamaClient(LLMClient):
         out = self._llm.create_chat_completion(
             messages=msgs, max_tokens=max_tokens, temperature=0.2
         )
+        try:
+            from opennote.chat.client import TokenUsage
+
+            u = out.get("usage") or {}
+            pt, ct = int(u.get("prompt_tokens", 0) or 0), int(u.get("completion_tokens", 0) or 0)
+            self.last_usage = TokenUsage(prompt_tokens=pt, completion_tokens=ct) if (pt or ct) else None
+        except Exception:
+            self.last_usage = None
         return out["choices"][0]["message"]["content"] or ""
 
     def chat(
@@ -240,7 +248,17 @@ class LocalLlamaClient(LLMClient):
 
         # 5. Return ChatResponse
         content = raw_text if not tool_calls else ""
-        return ChatResponse(content=content, tool_calls=tool_calls)
+        try:
+            from opennote.chat.client import TokenUsage
+
+            u = out.get("usage") or {}
+            pt, ct = int(u.get("prompt_tokens", 0) or 0), int(u.get("completion_tokens", 0) or 0)
+            self.last_usage = TokenUsage(prompt_tokens=pt, completion_tokens=ct) if (pt or ct) else None
+        except Exception:
+            self.last_usage = None
+        from opennote.chat.client import ChatResponse as _CR
+
+        return _CR(content=content, tool_calls=tool_calls, usage=self.last_usage)
 
     # -------------------------------------------------------------------------
     # Helper: extract the first outermost JSON object from a string

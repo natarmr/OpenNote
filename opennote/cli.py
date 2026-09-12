@@ -244,15 +244,17 @@ def search(
     notebook: Optional[str] = typer.Option(
         None, "--notebook", "-n", help="Notebook to search (default: most recent in this dir)."
     ),
-    top_k: int = typer.Option(3, "--top-k", "-k", help="Number of results to return."),
+    top_k: Optional[int] = typer.Option(None, "--top-k", "-k", help="Number of results to return (default: adaptive)."),
     source: Optional[str] = typer.Option(
         None, "--source", "-s", help="Restrict results to a source filename."
     ),
+    bm25: bool = typer.Option(True, "--bm25/--no-bm25", help="Hybrid BM25 + vectors (default: on)."),
+    bm25_alpha: float = typer.Option(0.5, "--bm25-alpha", help="Hybrid blend: 0=BM25, 1=vector."),
 ):
     """Retrieve (LLM-free) and cite the top chunks for a query."""
     nb = _notebook(notebook)
     try:
-        retriever = Retriever(nb, top_k=top_k)
+        retriever = Retriever(nb, top_k=top_k, use_bm25=bm25, bm25_alpha=bm25_alpha)
         results = retriever.search(query, source=source)
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
@@ -268,14 +270,19 @@ def golden(
     notebook: Optional[str] = typer.Option(
         None, "--notebook", "-n", help="Notebook to evaluate (default: most recent in this dir)."
     ),
-    top_k: int = typer.Option(5, "--top-k", "-k", help="Recall@k to measure."),
+    top_k: Optional[int] = typer.Option(None, "--top-k", "-k", help="Recall@k to measure (default: adaptive)."),
+    bm25: bool = typer.Option(True, "--bm25/--no-bm25", help="Hybrid BM25 + vectors (default: on)."),
+    bm25_alpha: float = typer.Option(0.5, "--bm25-alpha", help="Hybrid blend: 0=BM25, 1=vector."),
 ):
     """Evaluate retrieval recall@k against a golden set."""
     from opennote.retrieval.eval import evaluate, load_golden
 
     nb = _notebook(notebook)
     try:
-        retriever = Retriever(nb, top_k=top_k)
+        retriever = Retriever(nb, top_k=top_k, use_bm25=bm25, bm25_alpha=bm25_alpha)
+        # Evaluate needs a concrete k; resolve from retriever if adaptive
+        if top_k is None:
+            top_k = retriever.top_k
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -303,17 +310,24 @@ def ask_cmd(
     provider: Optional[str] = typer.Option(
         None, "--provider", "-p", help="LLM provider id (default: first configured)."
     ),
-    top_k: int = typer.Option(5, "--top-k", "-k", help="Context chunks to retrieve."),
+    top_k: Optional[int] = typer.Option(None, "--top-k", "-k", help="Context chunks to retrieve (default: adaptive)."),
+    multihop: bool = typer.Option(False, "--multihop", help="Decompose into sub-queries (plan → workers → synthesize)."),
+    bm25: bool = typer.Option(True, "--bm25/--no-bm25", help="Hybrid BM25 + vectors (default: on)."),
+    bm25_alpha: float = typer.Option(0.5, "--bm25-alpha", help="Hybrid blend: 0=BM25, 1=vector."),
 ):
     """Grounded, cited Q&A over a notebook's sources."""
     nb = _notebook(notebook)
     try:
-        result = ask(nb, question, provider_id=provider, top_k=top_k)
+        result = ask(nb, question, provider_id=provider, top_k=top_k, multihop=multihop, use_bm25=bm25, bm25_alpha=bm25_alpha)
     except (ChatError, ValueError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
     typer.echo(f"\n--- Answer (via {result.provider_id}:{result.model}) ---\n")
     typer.echo(result.answer)
+    usage = getattr(result, "usage", None)
+    if usage is not None:
+        typer.echo()
+        typer.echo(usage.render())
     typer.echo()
 
 
@@ -518,6 +532,10 @@ def chat_cmd(
         result = agent.result
         typer.echo(f"\n--- Answer (via {result.provider_id}:{result.model}) ---\n")
         typer.echo(result.answer)
+        usage = getattr(result, "usage", None)
+        if usage is not None:
+            typer.echo()
+            typer.echo(usage.render())
         typer.echo()
 
 

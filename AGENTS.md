@@ -13,7 +13,7 @@
 
 ## Core Packages & Entry Points
 
-- `opennote.retrieval.retriever.Retriever` — vector search over notebook chunks; use `use_bm25=True, bm25_alpha=0.5` for hybrid BM25+rerank
+- `opennote.retrieval.retriever.Retriever` — hybrid BM25+vectors by default (adaptive `top_k` 5→8→12 by corpus size; see `engg_choices.md:E1/E2`); pass `use_bm25=False` or `--no-bm25` to disable
 - `opennote.retrieval.bm25.Bm25Retriever` — keyword BM25 retrieval; `hybrid_search()` combines with vector scores
 - `opennote.artifacts` — studio generators: `create_mindmap`, `make_study_guide`, `make_faq`, `make_briefing`, `make_timeline`, `make_source_summaries`, `make_suggested_questions`; `save_artifact` persists to `notebook/artifacts/`
 - `opennote.audio.tts.explain_audio` — TTS adapter chain (groq→openai→gemini→edge-tts); degrades to `.md` transcript
@@ -29,13 +29,14 @@
 
 - Modes cycle: `ask → search → studio` (Tab cycles); `/studio` slash command enters studio mode
 - Studio mode presents a submenu of artifact generators (mind-map, study guide, FAQ, briefing, timeline, suggested questions)
-- Slash commands: `/studio`, `/mindmap`, `/study`, `/faq`, `/briefing`, `/timeline`, `/suggest`, `/audio`, `/video`, `/open`, `/skills`, `/skill`, `/plugins`, `/agents`, `/agent`, `/capabilities`
+- Slash commands: `/studio`, `/mindmap`, `/study`, `/faq`, `/briefing`, `/timeline`, `/suggest`, `/audio`, `/video`, `/open`, `/skills`, `/skill`, `/plugins`, `/agents`, `/agent`, `/capabilities`, `/context`
+- Context meter (`opennote/context_meter.py`, `engg_choices.md:E12`): provider-reported tokens when available (`~` estimate otherwise); 32-col right `SideBar` (session/context/services/footer, hidden <112 cols) + persistent `ctx` readout in prompt bar + `/context` panel; spend in `<notebook>/usage.json`; TUI chrome is ASCII-only
 - Transcript shows results; graceful degradation when backends unavailable
 - Run TUI tests: `py -m pytest tests/test_tui_app.py` (may have import errors if Textual not fully set up)
 
 ## Tests
 
-- Run the full suite: `py -m pytest -q` — **344/344 pass** (no known failures)
+- Run the full suite: `py -m pytest -q` — **356/356 pass** (includes `tests/test_e2e_grounded.py`); `py -m pytest tests/data/kimi.tsv` golden: `opennote golden tests/data/kimi.tsv`
 - Run TUI tests only: `py -m pytest tests/test_tui_app.py`
 - `test_schemas_have_both_tools` expects `{"search", "list_sources", "web_search", "read_page", "submit_grounded_answer"}` (core only; dynamic tools via `get_tool_schemas`)
 
@@ -47,7 +48,7 @@
 ## Workflow Order
 
 1. `lint` → `typecheck` → `test`
-2. If adding retrieval features: enable `use_bm25` on `Retriever` and tune `bm25_alpha`
+2. If adding retrieval features: hybrid is default-on; use `--no-bm25` / `use_bm25=False` to disable and tune `bm25_alpha`; `top_k` is adaptive (5→8→12), see `engg_choices.md`
 3. If adding TTS/video: ensure Groq key or fallback transcript will be used
 4. If adding web search: configure correct `TAVILY_API_KEY`
 5. If adding skills: `npx skills add <owner/repo> -a codex` (→ `.agents/skills/` — shared dir scanned by opennote)

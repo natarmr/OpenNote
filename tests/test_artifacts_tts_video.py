@@ -75,6 +75,12 @@ def test_explain_audio_degrades_to_transcript_when_no_backend(monkeypatch, tmp_p
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
 
     # Force every backend to fail: no keys + edge-tts not importable.
+    # Also mock the key-resolving backends because keyring may still hold keys.
+    import opennote.audio.tts as tts
+
+    monkeypatch.setattr(tts, "_groq_tts", lambda s, p: tts.TtsResult(success=False, error="no groq", backend="groq"))
+    monkeypatch.setattr(tts, "_openai_tts", lambda s, p: tts.TtsResult(success=False, error="no openai", backend="openai"))
+    monkeypatch.setattr(tts, "_gemini_tts", lambda s, p: tts.TtsResult(success=False, error="no gemini", backend="gemini"))
     import builtins
 
     real_import = builtins.__import__

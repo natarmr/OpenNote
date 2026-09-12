@@ -57,6 +57,38 @@ def test_direct_answer_no_tools():
     assert len(client.sent) == 1
 
 
+def test_loop_sums_provider_usage_across_rounds():
+    from opennote.chat.client import TokenUsage
+
+    client = ScriptedClient(
+        [
+            ChatResponse(
+                content="",
+                tool_calls=[ToolCall(id="t1", name="search", arguments={"query": "q"})],
+                usage=TokenUsage(prompt_tokens=100, completion_tokens=10),
+            ),
+            ChatResponse(content="Done [1].", usage=TokenUsage(prompt_tokens=200, completion_tokens=20)),
+        ]
+    )
+    out = agent_turn(
+        StubNotebook(), "q", client=client, retriever=FakeRetriever(results=[_result("a.pdf", "a")])
+    )
+    assert out.result.usage is not None
+    assert out.result.usage.exact is True
+    assert out.result.usage.input_tokens == 300
+    assert out.result.usage.output_tokens == 30
+
+
+def test_loop_falls_back_to_estimate_without_provider_usage():
+    client = ScriptedClient([ChatResponse(content="Answer [1].")])
+    out = agent_turn(
+        StubNotebook(), "q", client=client, retriever=FakeRetriever(results=[_result("a.pdf", "a")])
+    )
+    assert out.result.usage is not None
+    assert out.result.usage.exact is False
+    assert "~" in out.result.usage.render()
+
+
 def test_max_tokens_honored():
     client = ScriptedClient([ChatResponse(content="Short.")])
     agent_turn(StubNotebook(), "q", client=client, retriever=FakeRetriever(), max_tokens=512)

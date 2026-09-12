@@ -149,6 +149,7 @@ class InputDialog(ModalScreen):
         self.query_one("#dialog-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
         value = event.value.strip()
         self.dismiss(value or None)
 

@@ -13,6 +13,7 @@ from typing import Callable, Dict, List, Optional
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.screen import Screen
 
@@ -26,18 +27,20 @@ from opennote.tui.commands import lookup, make_commands
 from opennote.tui.dialogs import HelpDialog, InfoDialog, ask_input, item_list, confirm_dialog
 from opennote.tui.theme import DEFAULT, LIGHT, Palette
 from opennote.tui.widgets.prompt import MODE_LABELS, MODES, PromptBar, PromptInput
+from opennote.tui.widgets.sidebar import SideBar
 from opennote.tui.widgets.transcript import Transcript
 
 logger = logging.getLogger("opennote.tui.chat")
 
 
 class TurnResult(Message):
-    def __init__(self, question: str, answer: str, provider_id: str, model: str) -> None:
+    def __init__(self, question: str, answer: str, provider_id: str, model: str, usage=None) -> None:
         super().__init__()
         self.question = question
         self.answer = answer
         self.provider_id = provider_id
         self.model = model
+        self.usage = usage
 
 
 class TurnFailed(Message):
@@ -129,12 +132,19 @@ class ChatScreen(Screen):
         self._cancel_flag = False
         self.mode = "ask"
         self.notebook: Optional[Notebook] = None
+        # Guards the startup dialog against double-push (only one may exist).
+        self._startup_pending = False
+        # Tracks whether the banner is currently live in the transcript.
+        self._banner_live = False
 
     # -- composition -------------------------------------------------------
 
     def compose(self) -> ComposeResult:
-        yield Transcript(id="transcript")
-        yield PromptBar(id="prompt-bar")
+        with Horizontal(id="main"):
+            with Vertical(id="left"):
+                yield Transcript(id="transcript")
+                yield PromptBar(id="prompt-bar")
+            yield SideBar(id="sidebar")
 
     def _open_palette(self) -> None:
         self.action_open_palette()
@@ -143,9 +153,25 @@ class ChatScreen(Screen):
         if not self.has_class("has-history"):
             self.add_class("has-history")
 
+    #: Below this terminal width the right sidebar hides (small screens).
+    SIDEBAR_MIN_WIDTH = 112
+
     def on_mount(self) -> None:
         self.prompt = self.query_one("#prompt-bar", PromptBar)
         self.transcript = self.query_one("#transcript", Transcript)
+        self.sidebar = self.query_one("#sidebar", SideBar)
+        self._fit_sidebar()
+
+    def on_resize(self, event) -> None:
+        self._fit_sidebar()
+
+    def _fit_sidebar(self) -> None:
+        """Hide the sidebar on narrow terminals; show it when room allows."""
+        try:
+            width = self.app.size.width if self.app else 200
+            self.query_one("#sidebar", SideBar).display = width >= self.SIDEBAR_MIN_WIDTH
+        except Exception:
+            pass
         self.transcript.palette = self.palette
         self.commands = make_commands(self)
         self.prompt.set_commands(self.commands)
@@ -157,8 +183,15 @@ class ChatScreen(Screen):
         else:
             self._startup_auto_new()
 
-    def _finish_mount(self) -> None:
+    def _show_banner(self) -> None:
+        """Add the banner unless already live (prevents duplicates)."""
+        if self._banner_live:
+            return
         self.transcript.add_banner(self.palette)
+        self._banner_live = True
+
+    def _finish_mount(self) -> None:
+        self._show_banner()
         msgs = load_transcript(self.notebook) if self.notebook else []
         if msgs:
             self._reveal_transcript()
@@ -179,6 +212,9 @@ class ChatScreen(Screen):
 
     def _startup_auto_new(self) -> None:
         """Auto-open a new notebook: prompt prefilled with next free name."""
+        if self._startup_pending or self.notebook is not None:
+            return
+        self._startup_pending = True
         suggested = self._manager.next_notebook_name(current_project())
         self._startup_suggested = suggested
         ask_input(
@@ -190,9 +226,10 @@ class ChatScreen(Screen):
         )
 
     def _on_startup_name(self, name: Optional[str]) -> None:
+        self._startup_pending = False
         if name is None:
             # Esc -> show picker (open existing / delete / rename)
-            self.transcript.add_banner(self.palette)
+            self._show_banner()
             self.prompt.set_mode(self.mode)
             self.prompt.focus_input()
             self._sync_meta()
@@ -263,6 +300,99 @@ class ChatScreen(Screen):
         if not pid:
             pid = "no provider"
         self.prompt.set_model(model, pid)
+        self._sync_sidebar(model, pid)
+        # Opencode-style: ctx readout always visible, even before the first
+        # turn (shows window + spend so users can find it immediately).
+        try:
+            from opennote.context_meter import ContextUsage, context_limit_for, load_spent
+
+            nb_dir = getattr(self.notebook, "directory", None)
+            spent = load_spent(nb_dir)
+            base = getattr(self, "_last_usage", None)
+            if base is None:
+                base = ContextUsage(
+                    limit=context_limit_for(model),
+                    model=model,
+                    exact=True,
+                    session_spent=spent,
+                )
+            else:
+                base.session_spent = spent if spent >= base.session_spent else base.session_spent
+            self.prompt.set_context(base)
+        except Exception:
+            pass
+
+    def _sync_sidebar(self, model: str = "", pid: str = "") -> None:
+        """Refresh the right-side panel: session, context, services, footer."""
+        try:
+            sidebar = self.query_one("#sidebar", SideBar)
+        except Exception:
+            return
+        # Session: notebook name + created timestamp.
+        try:
+            if self.notebook is not None:
+                sidebar.set_session(self.notebook.name, f"created {self.notebook.created[:19]}")
+            else:
+                sidebar.set_session("No notebook", "open or create one")
+        except Exception:
+            pass
+        # Context: last usage, or zero baseline so the box is never empty.
+        try:
+            from opennote.context_meter import ContextUsage, context_limit_for, load_spent
+
+            usage = getattr(self, "_last_usage", None)
+            if usage is None:
+                nb_dir = getattr(self.notebook, "directory", None)
+                usage = ContextUsage(
+                    limit=context_limit_for(model),
+                    model=model,
+                    exact=True,
+                    session_spent=load_spent(nb_dir),
+                )
+            sidebar.set_usage(usage)
+        except Exception:
+            pass
+        # Services: provider/model + currently active skills and plugins.
+        try:
+            lines = [f"{pid} | {model}" if model else pid]
+            try:
+                from opennote.skills.registry import SkillRegistry
+
+                skills = SkillRegistry.discover().list()
+                lines.append(
+                    "skills: " + ", ".join(s.name for s in skills) if skills else "skills: none"
+                )
+            except Exception:
+                pass
+            try:
+                from opennote.capabilities import get_capabilities
+                from opennote.plugins.loader import PluginContext, PluginLoader
+
+                caps = get_capabilities()
+                loader = PluginLoader(PluginContext(capabilities=caps, notebook=self.notebook))
+                loader.load()
+                names = [h._name for h in loader.hooks] + [
+                    t for t in loader.tools if not any(t in h.tools for h in loader.hooks)
+                ]
+                lines.append("plugins: " + ", ".join(names) if names else "plugins: none")
+            except Exception:
+                pass
+            sidebar.set_services(lines)
+        except Exception:
+            pass
+        # Footer: cwd + git branch (left), app version (right).
+        try:
+            from pathlib import Path
+
+            from opennote import __version__
+            from opennote.tui.widgets.sidebar import git_branch
+
+            cwd = Path.cwd()
+            branch = git_branch(cwd)
+            left = f"{cwd.name}:{branch}" if branch else cwd.name
+            sidebar.set_footer(left, f"OpenNote {__version__}")
+        except Exception:
+            pass
 
     # -- history rendering -------------------------------------------------
 
@@ -357,7 +487,7 @@ class ChatScreen(Screen):
         result: AskResult = agent.result
         self.app.call_from_thread(
             self.post_message,
-            TurnResult(question, result.answer, result.provider_id, result.model),
+            TurnResult(question, result.answer, result.provider_id, result.model, getattr(result, "usage", None)),
         )
 
     def _start_search(self, question: str) -> None:
@@ -563,17 +693,17 @@ class ChatScreen(Screen):
 
         fallback_templates = {
             "study": f"Study guide for **{topic}** based on {len(results)} chunks.\n" + "\n".join(
-                f"ΓÇó {r.metadata.get('filename','unknown')}: {r.content[:80]}" for r in results[:5]),
+                f"- {r.metadata.get('filename','unknown')}: {r.content[:80]}" for r in results[:5]),
             "faq": f"FAQ for **{topic}** from {len(results)} sources.\n" + "\n".join(
                 f"Q: What does {r.metadata.get('filename','unknown')} say about {topic}?\nA: {r.content[:100]}" for r in results[:5]),
             "briefing": f"Briefing for **{topic}** from {len(results)} sources.\n" + "\n".join(
-                f"ΓÇó {r.metadata.get('filename','unknown')}: {r.content[:120]}" for r in results[:5]),
+                f"- {r.metadata.get('filename','unknown')}: {r.content[:120]}" for r in results[:5]),
             "timeline": f"Timeline for **{topic}** from {len(results)} sources.\n" + "\n".join(
                 f"- {r.metadata.get('filename','unknown')}: {r.content[:80]}" for r in results[:8]),
             "suggest": f"Suggested questions for **{topic}** from {len(results)} sources.\n" + "\n".join(
-                f"ΓÇó Suggested question from {r.metadata.get('filename','unknown')}" for r in results[:5]),
-            "mindmap": f"MindΓÇæmap overview for **{topic}**.\n" + "\n".join(
-                f"ΓÇó {r.metadata.get('filename','unknown')}: {r.content[:50]}" for r in results[:5]),
+                f"- Suggested question from {r.metadata.get('filename','unknown')}" for r in results[:5]),
+            "mindmap": f"Mind map overview for **{topic}**.\n" + "\n".join(
+                f"- {r.metadata.get('filename','unknown')}: {r.content[:50]}" for r in results[:5]),
         }
         body = fallback_templates.get(kind, "")
         art = save_artifact(kind=kind, title=topic, body=body, notebook_dir=notebook.directory)
@@ -581,6 +711,14 @@ class ChatScreen(Screen):
 
     def on_turn_result(self, msg: TurnResult) -> None:
         self.transcript.add_answer(msg.answer)
+        usage = getattr(msg, "usage", None)
+        # Persistent opencode-style readout in the prompt bar (survives scroll).
+        try:
+            self.prompt.set_context(usage)
+            self._last_usage = usage
+            self.query_one("#sidebar", SideBar).set_usage(usage)
+        except Exception:
+            pass
         self._sync_meta()
         self.prompt.set_idle()
 
@@ -655,7 +793,8 @@ class ChatScreen(Screen):
         if self.notebook is not None:
             clear_transcript(self.notebook)
         self.transcript.clear()
-        self.transcript.add_banner(self.palette)
+        self._banner_live = False
+        self._show_banner()
 
     def _switch_provider(self, arg: str = "") -> None:
         arg = arg.strip()
@@ -684,7 +823,7 @@ class ChatScreen(Screen):
             model = settings.model if settings else None
             if not (resolve_key(p.id) and model):
                 continue
-            items.append((p.id, f"{p.label} ┬╖ {model}"))
+            items.append((p.id, f"{p.label} | {model}"))
         if not items:
             self.transcript.add_info("No provider configured. Run 'opennote auth add <provider>'.")
             return
@@ -746,7 +885,8 @@ class ChatScreen(Screen):
         dropped = len(messages) - last_user
         save_transcript(self.notebook, messages[:last_user])
         self.transcript.clear()
-        self.transcript.add_banner(self.palette)
+        self._banner_live = False
+        self._show_banner()
         self._render_history()
         self.prompt.set_idle()
         self.transcript.add_info(f"Undid the last turn ({dropped} message(s) removed).")
@@ -768,7 +908,7 @@ class ChatScreen(Screen):
             lines.append("  (no notebook)")
         lines.append("Client:")
         if self._client:
-            lines.append(f"  {self._client.provider_id} ┬╖ {self._client.model}")
+            lines.append(f"  {self._client.provider_id} | {self._client.model}")
         else:
             lines.append("  (no provider configured)")
         self.app.push_screen(InfoDialog("Details", "\n".join(lines)))
@@ -779,7 +919,7 @@ class ChatScreen(Screen):
         skills = reg.list()
         if not skills:
             self.transcript.add_info("No skills installed.")
-            self.transcript.add_info("Install: npx skills add <owner/repo> -a codex  (ΓåÆ .agents/skills/)")
+            self.transcript.add_info("Install: npx skills add <owner/repo> -a codex  (-> .agents/skills/)")
             return
         for s in skills:
             self.transcript.add_info(f"  {s.name:<25} {s.description[:80]}")
@@ -865,6 +1005,26 @@ class ChatScreen(Screen):
             f"agents: {getattr(caps, 'agents_available', [])}",
         ]
         self.app.push_screen(InfoDialog("Capabilities", "\n".join(lines)))
+
+    def _show_context(self, _arg: str = "") -> None:
+        """Show the opencode-style Context panel (works before the first turn)."""
+        usage = getattr(self, "_last_usage", None)
+        if usage is None:
+            from opennote.context_meter import ContextUsage, context_limit_for, load_spent
+
+            model = ""
+            if self._client:
+                model = self._client.model
+            elif self.notebook:
+                model = self.notebook.model
+            nb_dir = getattr(self.notebook, "directory", None)
+            usage = ContextUsage(
+                limit=context_limit_for(model),
+                model=model,
+                exact=True,
+                session_spent=load_spent(nb_dir),
+            )
+        self.transcript.add_info(usage.render())
 
     def _set_mode_ask(self, _arg: str = "") -> None:
         self._set_mode("ask")
@@ -1016,7 +1176,7 @@ class ChatScreen(Screen):
             self.transcript.add_info("No notebooks for this directory. Use 'New notebook'.")
             return
         items = [
-            (nb.name, f"{'*' if self.notebook and nb.name == self.notebook.name else ' '} {nb.name} ┬╖ {len(nb.sources)}/5 sources ┬╖ {len(load_transcript(nb))} msgs")
+            (nb.name, f"{'*' if self.notebook and nb.name == self.notebook.name else ' '} {nb.name} | {len(nb.sources)}/5 sources | {len(load_transcript(nb))} msgs")
             for nb in notebooks
         ]
         item_list(self.app, "Open notebook", items, on_pick=self._on_notebook_picked)
@@ -1044,7 +1204,8 @@ class ChatScreen(Screen):
         self.notebook_name = notebook.name
         self.notebook = notebook
         self.transcript.clear()
-        self.transcript.add_banner(self.palette)
+        self._banner_live = False
+        self._show_banner()
         msgs = load_transcript(notebook)
         if msgs:
             self._reveal_transcript()
@@ -1069,7 +1230,8 @@ class ChatScreen(Screen):
         self.notebook_name = notebook.name
         self.notebook = notebook
         self.transcript.clear()
-        self.transcript.add_banner(self.palette)
+        self._banner_live = False
+        self._show_banner()
         self._sync_meta()
         self.transcript.add_info(f"Created notebook: {notebook.name}")
         return
@@ -1098,7 +1260,7 @@ class ChatScreen(Screen):
         if not notebooks:
             self.transcript.add_info("No notebooks to delete.")
             return
-        items = [(nb.name, f"{nb.name} ┬╖ {len(nb.sources)}/5 sources") for nb in notebooks]
+        items = [(nb.name, f"{nb.name} | {len(nb.sources)}/5 sources") for nb in notebooks]
         item_list(self.app, "Delete notebook", items, on_pick=self._on_delete_picked)
 
     def _on_delete_picked(self, name: Optional[str]) -> None:
@@ -1118,7 +1280,8 @@ class ChatScreen(Screen):
                     else:
                         self.notebook = None
                         self.transcript.clear()
-                        self.transcript.add_banner(self.palette)
+                        self._banner_live = False
+                        self._show_banner()
             except Exception as e:
                 self.transcript.add_error(str(e))
         confirm_dialog(self.app, f"Delete notebook '{name}'? This cannot be undone.", on_confirm)
@@ -1326,15 +1489,15 @@ class ChatScreen(Screen):
             models = rank_models(provider, result.models)
         else:
             if result.error == "invalid-key":
-                self.transcript.add_error("Invalid API key ΓÇö could not fetch models.")
+                self.transcript.add_error("Invalid API key - could not fetch models.")
             elif result.error == "network":
                 self.transcript.add_info(
-                    "Could not reach the model catalog ΓÇö using default models. "
+                    "Could not reach the model catalog - using default models. "
                     "Run 'opennote auth verify <provider>' to refresh."
                 )
             else:
                 self.transcript.add_info(
-                    f"Model catalog returned an error ({result.error}) ΓÇö using default models."
+                    f"Model catalog returned an error ({result.error}) - using default models."
                 )
             models = list(provider.preferred_models)
 

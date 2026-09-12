@@ -73,6 +73,10 @@ ChatScreen.has-history #meta-row {
     color: $text-muted;
 }
 
+#meta-row Label {
+    margin-right: 1;
+}
+
 #meta-model {
     color: $text;
 }
@@ -105,6 +109,50 @@ ChatScreen.has-history #status-row {
     color: $text-muted;
     width: 1fr;
     text-align: right;
+}
+
+#main {
+    height: 1fr;
+}
+
+#left {
+    width: 1fr;
+    height: 1fr;
+}
+
+#sidebar {
+    width: 32;
+    min-width: 32;
+    height: 1fr;
+    background: $background-panel;
+    padding: 1 2;
+}
+
+#sidebar-body {
+    height: 1fr;
+}
+
+#side-session-title {
+    text-style: bold;
+}
+
+#side-session-sub {
+    color: $text-muted;
+}
+
+#side-context-head {
+    text-style: bold;
+    margin-top: 1;
+}
+
+#side-services-head {
+    text-style: bold;
+    margin-top: 1;
+}
+
+#sidebar-footer {
+    height: auto;
+    dock: bottom;
 }
 
 #command-popup {

@@ -4,7 +4,7 @@
 
   <p align="center">
     An open source, privacy-focused agentic harness to help you study
-    Follow <a href="https://x.com/zirmythen">@lfnovo on X</a> for updates
+    Follow <a href="https://x.com/zirmythen">@zirmythen on X</a> for updates
     <br />
     <br />
     <a href="docs/0-START-HERE/index.md">📚 Get Started</a>

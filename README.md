@@ -1,9 +1,7 @@
-# OpenNote
-
 <br />
 <div align="center">
 
-  <h3 align="center">OpenNote</h3>
+  <h1 align="center">OpenNote</h1>
 
   <p align="center">
     An open source, privacy-focused agentic harness to help you study

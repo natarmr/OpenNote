@@ -30,8 +30,6 @@ opennote ask "What does the paper claim about retrieval?" --notebook my_notebook
 opennote chat --notebook my_notebook
 ```
 
-> If you have an unrelated `npm` package named `opennote` installed globally, it shadows this CLI on PATH. Use `py -m opennote.cli <cmd>` as an unambiguous alternative.
-
 ---
 ## A private, multi-model, 100% local, full-featured alternative to NotebookLM 
 

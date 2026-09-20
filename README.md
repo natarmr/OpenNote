@@ -35,7 +35,7 @@ opennote chat --notebook my_notebook
 ---
 ## A private, multi-model, 100% local, full-featured alternative to NotebookLM 
 
-![New Notebook](docs/assets/asset_list.png)
+![New Notebook](docs/assets/list.png)
 
 In a world dominated by Artificial Intelligence, having the ability to think 🧠 and acquire new knowledge 💡, is a skill that should not be a privilege for a few, nor restricted to a single provider.
 

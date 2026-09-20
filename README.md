@@ -39,7 +39,7 @@ opennote chat --notebook my_notebook
 
 In a world dominated by Artificial Intelligence, having the ability to think and acquire new knowledge , is a skill that should not be a privilege for a few, nor restricted to a single provider.
 
-**Open Notebook empowers you to:**
+**OpenNote empowers you to:**
 - **Control your data** - Keep your research private and secure
 - **Choose your AI models** - Support for 5+ providers including OpenAI, Anthropic, Ollama, LM Studio, and more
 - **Organize multi-modal content** - PDFs, videos, audio, web pages, and more

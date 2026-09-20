@@ -2,14 +2,11 @@
 
 <br />
 <div align="center">
-  <a href="https://github.com/lfnovo/open-notebook">
-    <img src="docs/assets/hero.svg" alt="Logo">
-  </a>
 
-  <h3 align="center">Open Notebook</h3>
+  <h3 align="center">OpenNote</h3>
 
   <p align="center">
-    An open source, privacy-focused alternative to Google's Notebook LM!
+    An open source, privacy-focused agentic harness to help you study
     <br /><strong>Join our <a href="https://discord.gg/37XJPXfz2w">Discord server</a> for help, to share workflow ideas, and suggest features!</strong>
     <br />
     <a href="https://www.open-notebook.ai"><strong>Checkout our website »</strong></a>

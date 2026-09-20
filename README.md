@@ -33,6 +33,25 @@ opennote chat --notebook my_notebook
 > If you have an unrelated `npm` package named `opennote` installed globally, it shadows this CLI on PATH. Use `py -m opennote.cli <cmd>` as an unambiguous alternative.
 
 ---
+## A private, multi-model, 100% local, full-featured alternative to NotebookLM 
+
+![New Notebook](docs/assets/asset_list.png)
+
+In a world dominated by Artificial Intelligence, having the ability to think 🧠 and acquire new knowledge 💡, is a skill that should not be a privilege for a few, nor restricted to a single provider.
+
+**Open Notebook empowers you to:**
+- 🔒 **Control your data** - Keep your research private and secure
+- 🤖 **Choose your AI models** - Support for 18+ providers including OpenAI, Anthropic, Ollama, LM Studio, and more
+- 📚 **Organize multi-modal content** - PDFs, videos, audio, web pages, and more
+- 🎙️ **Generate professional podcasts** - Advanced multi-speaker podcast generation
+- 🔍 **Search intelligently** - Full-text and vector search across all your content
+- 💬 **Chat with context** - AI conversations powered by your research
+- 🌐 **Multi-language UI** - English, Portuguese, Chinese (Simplified & Traditional), Japanese, Russian, and Bengali support
+
+Learn more about our project at [https://www.open-notebook.ai](https://www.open-notebook.ai)
+
+---
+
 
 ## 📦 Features
 

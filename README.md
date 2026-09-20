@@ -1,8 +1,31 @@
 # OpenNote
 
-**Grounded, cited Q&A over your own sources — in the terminal.**
+<br />
+<div align="center">
+  <a href="https://github.com/lfnovo/open-notebook">
+    <img src="docs/assets/hero.svg" alt="Logo">
+  </a>
 
-A NotebookLM-style tool for the command line: ingest any document, chat with it, and get answers with explicit citations. Bring your own key (BYOK); every answer roots back to the source page/heading/timestamp, never the model's general knowledge.
+  <h3 align="center">Open Notebook</h3>
+
+  <p align="center">
+    An open source, privacy-focused alternative to Google's Notebook LM!
+    <br /><strong>Join our <a href="https://discord.gg/37XJPXfz2w">Discord server</a> for help, to share workflow ideas, and suggest features!</strong>
+    <br />
+    <a href="https://www.open-notebook.ai"><strong>Checkout our website »</strong></a>
+    <br />
+    Follow <a href="https://x.com/lfnovo">@lfnovo on X</a> for updates
+    <br />
+    <br />
+    <a href="docs/0-START-HERE/index.md">📚 Get Started</a>
+    ·
+    <a href="docs/3-USER-GUIDE/index.md">📖 User Guide</a>
+    ·
+    <a href="docs/2-CORE-CONCEPTS/index.md">✨ Features</a>
+    ·
+    <a href="docs/1-INSTALLATION/index.md">🚀 Deploy</a>
+  </p>
+</div>
 
 ---
 

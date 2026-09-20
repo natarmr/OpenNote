@@ -4,11 +4,7 @@
 
   <p align="center">
     An open source, privacy-focused agentic harness to help you study
-    <br /><strong>Join our <a href="https://discord.gg/37XJPXfz2w">Discord server</a> for help, to share workflow ideas, and suggest features!</strong>
-    <br />
-    <a href="https://www.open-notebook.ai"><strong>Checkout our website »</strong></a>
-    <br />
-    Follow <a href="https://x.com/lfnovo">@lfnovo on X</a> for updates
+    Follow <a href="https://x.com/zirmythen">@lfnovo on X</a> for updates
     <br />
     <br />
     <a href="docs/0-START-HERE/index.md">📚 Get Started</a>

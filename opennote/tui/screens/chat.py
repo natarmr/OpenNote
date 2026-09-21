@@ -34,13 +34,14 @@ logger = logging.getLogger("opennote.tui.chat")
 
 
 class TurnResult(Message):
-    def __init__(self, question: str, answer: str, provider_id: str, model: str, usage=None) -> None:
+    def __init__(self, question: str, answer: str, provider_id: str, model: str, usage=None, skill: Optional[str] = None) -> None:
         super().__init__()
         self.question = question
         self.answer = answer
         self.provider_id = provider_id
         self.model = model
         self.usage = usage
+        self.skill = skill
 
 
 class TurnFailed(Message):
@@ -136,6 +137,8 @@ class ChatScreen(Screen):
         self._startup_pending = False
         # Tracks whether the banner is currently live in the transcript.
         self._banner_live = False
+        # Skill armed via /use: injected into the next ask turn, then cleared.
+        self._pending_skill: Optional[str] = None
 
     # -- composition -------------------------------------------------------
 
@@ -449,15 +452,43 @@ class ChatScreen(Screen):
         if self.notebook is None:
             self.transcript.add_error("Notebook is not available.")
             return
+        # Pop a skill armed via /use (kept armed when the turn can't start).
+        skill_block, skill_name = self._pop_pending_skill()
         self._cancel_flag = False
         self.prompt.set_busy("Searching sources...")
-        self._run_ask(question)
+        self._run_ask(question, skill_block=skill_block, skill_name=skill_name)
+
+    def _pop_pending_skill(self) -> tuple:
+        """Render an armed skill into a model context block (mirrors the agent `skill` tool output)."""
+        name = self._pending_skill
+        if not name:
+            return "", ""
+        try:
+            from opennote.skills.registry import SkillRegistry
+            skill = SkillRegistry.discover().get(name)
+        except Exception:
+            skill = None
+        if skill is None:
+            self._pending_skill = None
+            self.transcript.add_error(f"Armed skill '{name}' is no longer installed. Continuing without it.")
+            return "", ""
+        parts = [f"<active_skill name=\"{skill.name}\">", f"# Skill: {skill.name}", f"Description: {skill.description}", "", skill.body]
+        if skill.files:
+            parts.append("\nBundled files (use via the run_skill_script tool when relevant):")
+            for f in skill.files[:30]:
+                parts.append(f"  - {f}")
+        parts.append(f"Skill directory: {skill.directory}")
+        parts.append("</active_skill>")
+        self._pending_skill = None
+        return "\n".join(parts), skill.name
 
     @work(thread=True, exclusive=True, group="turn")
-    async def _run_ask(self, question: str) -> None:
+    async def _run_ask(self, question: str, skill_block: str = "", skill_name: str = "") -> None:
         notebook = self.notebook
         history = load_transcript(notebook) if notebook else []
         provider_id = self._client.provider_id if self._client else None
+        if skill_block:
+            question = f"{skill_block}\n\nUser task: {question}"
         try:
             agent = agent_turn(
                 notebook,
@@ -487,7 +518,7 @@ class ChatScreen(Screen):
         result: AskResult = agent.result
         self.app.call_from_thread(
             self.post_message,
-            TurnResult(question, result.answer, result.provider_id, result.model, getattr(result, "usage", None)),
+            TurnResult(question, result.answer, result.provider_id, result.model, getattr(result, "usage", None), skill_name or None),
         )
 
     def _start_search(self, question: str) -> None:
@@ -538,6 +569,9 @@ class ChatScreen(Screen):
     def _open_studio_menu(self) -> None:
         topic = getattr(self, "_studio_topic", "") or "your topic"
         items = [
+            ("view", f"{'View artifacts':>20}  (in-terminal viewer)"),
+        ]
+        items += [
             (key, f"{label:>20}  {topic}")
             for key, label, _ in self.STUDIO_GENERATORS
         ]
@@ -552,6 +586,9 @@ class ChatScreen(Screen):
             return
         if self.notebook is None:
             self.transcript.add_error("Notebook is not available.")
+            return
+        if key == "view":
+            self._open_artifact("")
             return
         topic = getattr(self, "_studio_topic", "") or ""
         if key == "audio":
@@ -711,6 +748,9 @@ class ChatScreen(Screen):
 
     def on_turn_result(self, msg: TurnResult) -> None:
         self._notify_done("Answer ready.")
+        skill = getattr(msg, "skill", None)
+        if skill:
+            self.transcript.add_info(f"Skill applied: {skill}")
         self.transcript.add_answer(msg.answer)
         usage = getattr(msg, "usage", None)
         # Persistent opencode-style readout in the prompt bar (survives scroll).
@@ -836,6 +876,7 @@ class ChatScreen(Screen):
         self.app.push_screen(SnakeScreen(status_fn=lambda: self.prompt.status_text))
 
     def _clear_transcript(self, _arg: str = "") -> None:
+        self._pending_skill = None
         if self.notebook is not None:
             clear_transcript(self.notebook)
         self.transcript.clear()
@@ -930,6 +971,7 @@ class ChatScreen(Screen):
             return
         dropped = len(messages) - last_user
         save_transcript(self.notebook, messages[:last_user])
+        self._pending_skill = None
         self.transcript.clear()
         self._banner_live = False
         self._show_banner()
@@ -969,6 +1011,40 @@ class ChatScreen(Screen):
             return
         for s in skills:
             self.transcript.add_info(f"  {s.name:<25} {s.description[:80]}")
+        self.transcript.add_info("Tip: /use <skill> <task> applies a skill to your next answer; /skill <name> shows details.")
+
+    def _use_skill(self, arg: str = "") -> None:
+        """Arm a skill for the next ask turn: /use <skill> [task]."""
+        from opennote.skills.registry import SkillRegistry
+        reg = SkillRegistry.discover()
+        text = arg.strip()
+        name, _, task = text.partition(" ")
+        name, task = name.strip(), task.strip()
+        if not name:
+            skills = reg.list()
+            if not skills:
+                self.transcript.add_info("No skills installed.")
+                self.transcript.add_info("Install: npx skills add <owner/repo> -a codex  (-> .agents/skills/)")
+                return
+            items = [(s.name, f"{s.name:<25} {s.description[:60]}") for s in skills]
+            item_list(self.app, "Use skill (applies to your next answer)", items, on_pick=self._on_use_skill_picked)
+            return
+        skill = reg.get(name)
+        if skill is None:
+            self.transcript.add_error(f"Skill '{name}' not found. Available: {', '.join(reg.names()) or 'none'}")
+            return
+        self._pending_skill = skill.name
+        if not task:
+            self.transcript.add_info(f"Skill '{skill.name}' armed — type your question (applies to the next answer).")
+            return
+        if self.prompt.busy:
+            self.transcript.add_info(f"Skill '{skill.name}' armed (busy — applies to your next answer).")
+            return
+        self._start_ask(task)
+
+    def _on_use_skill_picked(self, name: Optional[str]) -> None:
+        if name:
+            self._use_skill(name)
 
     def _show_skill(self, arg: str = "") -> None:
         name = arg.strip()
@@ -982,6 +1058,17 @@ class ChatScreen(Screen):
             self.transcript.add_error(f"Skill '{name}' not found. Try /skills")
             return
         lines = [f"Skill: {skill.name}", f"Description: {skill.description}", f"Directory: {skill.directory}", ""]
+        lines.append("How to use:")
+        lines.append(f"  /use {skill.name} <your task>  — applies this skill to your next answer")
+        scripts = [f for f in (skill.files or []) if f.endswith((".py", ".js", ".sh"))]
+        if scripts:
+            import os as _os
+            allowed = _os.environ.get("OPENNOTE_ALLOW_SKILL_SCRIPTS", "").strip().lower() in ("1", "true", "yes", "on")
+            state = "enabled" if allowed else "disabled (set OPENNOTE_ALLOW_SKILL_SCRIPTS=1 to enable)"
+            lines.append(f"  Scripts: {state}")
+            for f in scripts[:10]:
+                lines.append(f"    - {f}")
+        lines.append("")
         lines.append(skill.body[:3000])
         if skill.files:
             lines.append("\nBundled files:")

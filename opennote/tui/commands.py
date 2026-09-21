@@ -70,6 +70,7 @@ def make_commands(screen) -> List[Command]:
         Command("theme", "Switch dark/light theme", _handler(screen, "_switch_theme"), arg_hint="<dark|light>", category="Appearance"),
         Command("palette", "Open the command palette", _handler(screen, "_open_palette"), category="General"),
         Command("skills", "List installed skills", _handler(screen, "_list_skills"), category="Skills"),
+        Command("use", "Apply a skill to your next answer", _handler(screen, "_use_skill"), arg_hint="<skill> [task]", category="Skills"),
         Command("skill", "Show a skill", _handler(screen, "_show_skill"), arg_hint="<name>", category="Skills"),
         Command("plugins", "List loaded plugins", _handler(screen, "_list_plugins"), category="Plugins"),
         Command("agents", "List available agents", _handler(screen, "_list_agents"), category="Agents"),

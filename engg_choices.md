@@ -64,3 +64,25 @@ Each entry: rationale, defaults, escape hatch, status.
 - **Large files:** slice to 2 pages in tests (`test_e2e_grounded.py` via `pypdf` writer) to keep time <40s; full 47-page kimi is manual only.
 - **No live APIs in committed tests:** `FakeClient`/`FakeRetriever` mimic LLM/retrieval; `py` launcher not `python` per `AGENTS.md`.
 - **Status:** convention.
+
+## E13. Context budget + thinking-strip (upstream context_builder/text_utils parity)
+- **Budget:** `chat/context_budget.py` — `fit_tagged_context(results, budget_chars=12000)` with binary-search prefix truncation + `[truncated: showing first K of M chars]` notice inside `<source>`; `omitted_budget` items skipped (never notice-only). Chars-based (no tiktoken per E12); CLI `--context-budget` (0=unlimited), plumbed through `ask()` single-shot + multihop workers/synth.
+- **Thinking-strip:** `chat/clean.py:clean_thinking_content()` removes `<think>/<thinking>` blocks, tolerates missing opener, bypasses >100KB; applied in `_single_shot`, `_multihop` workers/synth, `agents/loop.py` final + thought_signature fallback.
+- **Status:** implemented (`tests/test_context_budget.py` 8 tests).
+
+## E14. Retrieval parity benchmark (800/120 vs 400/60 vs 1500/150)
+- **Method:** `tests/test_retrieval_parity.py` — synthetic rare-term corpus (E1 terms), deterministic BM25-forced recall (`alpha=0` → 1.0 on rare terms), chunk-count scaling assertion, `hybrid_search` alpha unit (0→BM25 wins, 1→vector wins, 0.5 blends).
+- **Outcome:** keeps 800/120 default; 400/60 + 1500/150 ingest paths verified via `chunk_size/chunk_overlap` plumbing. No default change — decision rule recorded: re-run matrix on real golden before changing global default.
+- **Status:** implemented (4 tests).
+
+## E15. Artifacts convergence (upstream Transformation/SourceInsight parity, no DB)
+- **Frontmatter:** `save_artifact(..., prompt_version, sources)` writes YAML `kind/title/created/prompt_version/sources(JSON)` + body; `load_artifact()`/`strip_frontmatter()` back-compat; `PROMPT_VERSIONS` stamps per kind.
+- **Jinja studio:** `prompt_templates/studio_*.jinja` (study/faq/briefing/timeline/summary/questions) via `chat/render.py` with legacy string fallback (`_render_studio`); new `kind="insight"` + `make_insight()` per-source analog of `SourceInsight`.
+- **Export:** `opennote artifacts export --notebook X --format json` emits `export_artifact_json()` list (kind/title/created/prompt_version/sources/body).
+- **Status:** implemented (`tests/test_artifacts_convergence.py` 3 tests); `test_artifacts_tts_video.py:50-58` updated for frontmatter.
+
+## E16. Question-aware answer depth (ask prompt shaping)
+- **Rule:** `ask_system.jinja:5` — factoids (who/when/where/how-many/which) 1–2 sentences; explanatory (what/why/how/explain/compare) direct answer + one cited paragraph (mechanism/details/caveats); every added sentence still cited. Tail reminder in `ask_post.jinja`; parity one-liners in `worker.jinja`/`synthesizer.jinja`.
+- **Rationale:** grounding rules alone reward minimal answers (Qwen returned bare one-liners); validator passes on ≥1 valid `[n]` so depth needs prompt pressure, not gate changes.
+- **Verified:** 48 grounding tests green; live probe (notebook-1/kimi, `qwen3.8-27b`): factoid 266 chars/2 sentences, explanatory 1581 chars structured, all cited; golden recall@12 = 1.00 unchanged.
+- **Status:** implemented.

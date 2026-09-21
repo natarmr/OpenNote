@@ -48,9 +48,14 @@ def test_atomic_write_no_tmp_leak_on_failure(tmp_path):
 
 
 def test_save_artifact_writes_file(tmp_path):
+    from opennote.artifacts import load_artifact, strip_frontmatter
+
     art = save_artifact("markdown", "Hello World", "# hi", tmp_path)
     assert art.path.exists()
-    assert art.path.read_text(encoding="utf-8") == "# hi"
+    raw = art.path.read_text(encoding="utf-8")
+    assert "# hi" in raw
+    assert strip_frontmatter(raw).strip() == "# hi"
+    assert load_artifact(art.path).body.strip() == "# hi"
 
 
 # --- L59: path traversal guards ----------------------------------------------

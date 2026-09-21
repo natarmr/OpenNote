@@ -29,7 +29,7 @@
 
 - Modes cycle: `ask → search → studio` (Tab cycles); `/studio` slash command enters studio mode
 - Studio mode presents a submenu of artifact generators (mind-map, study guide, FAQ, briefing, timeline, suggested questions)
-- Slash commands: `/studio`, `/mindmap`, `/study`, `/faq`, `/briefing`, `/timeline`, `/suggest`, `/audio`, `/video`, `/open`, `/skills`, `/skill`, `/plugins`, `/agents`, `/agent`, `/capabilities`, `/context`
+- Slash commands: `/studio`, `/mindmap`, `/study`, `/faq`, `/briefing`, `/timeline`, `/suggest`, `/audio`, `/video`, `/open`, `/skills`, `/skill`, `/plugins`, `/agents`, `/agent`, `/capabilities`, `/context`, `/snake` (waiting-room game, allowed while busy; completions toast over the modal)
 - Context meter (`opennote/context_meter.py`, `engg_choices.md:E12`): provider-reported tokens when available (`~` estimate otherwise); 32-col right `SideBar` (session/context/services/footer, hidden <112 cols) + persistent `ctx` readout in prompt bar + `/context` panel; spend in `<notebook>/usage.json`; TUI chrome is ASCII-only
 - Transcript shows results; graceful degradation when backends unavailable
 - Run TUI tests: `py -m pytest tests/test_tui_app.py` (may have import errors if Textual not fully set up)

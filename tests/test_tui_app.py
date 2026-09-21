@@ -219,6 +219,66 @@ async def test_startup_invalid_name_single_banner(tmp_path):
         assert text.count(BANNER_ROW) == 1
 
 
+async def test_snake_opens_and_quits_with_single_banner(tmp_path):
+    from textual.widgets import Static
+
+    from opennote.tui.screens.chat import ChatScreen
+    from opennote.tui.screens.snake import SnakeScreen
+
+    app = await _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("slash", "s", "n", "a", "k", "e")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, SnakeScreen)
+        assert app.screen._state.alive
+        board = app.screen.query_one("#snake-board", Static)
+        rendered = board.render()
+        text = rendered.plain if hasattr(rendered, "plain") else str(rendered)
+        assert "@" in text
+        # Arrow keys steer the snake.
+        await pilot.press("up")
+        await pilot.pause()
+        from opennote.tui.games.snake_logic import UP
+
+        assert app.screen._state.direction == UP
+        game = app.screen
+        await pilot.press("q")
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+        assert game._timer is None  # timer torn down on dismiss
+        assert _transcript_text(app.screen.transcript).count(BANNER_ROW) == 1
+
+
+async def test_snake_while_busy_then_result_lands(tmp_path):
+    from opennote.tui.screens.chat import ChatScreen
+    from opennote.tui.screens.snake import SnakeScreen
+
+    client = BlockingClient()
+    app = await _make_app(tmp_path, client=client, retriever=FakeRetriever(results=[]))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bar = app.screen.query_one("#prompt-bar", PromptBar)
+        await pilot.press(*"how now")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert bar.busy
+        # /snake is allowed while busy (waiting-room game).
+        await pilot.press("slash", "s", "n", "a", "k", "e")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, SnakeScreen)
+        game = app.screen
+        client.release.set()
+        await _wait_idle(pilot, bar)
+        await pilot.press("q")
+        await pilot.pause()
+        assert isinstance(app.screen, ChatScreen)
+        assert "done" in _transcript_text(app.screen.transcript)
+        assert game._timer is None
+
+
 async def test_ask_turn_updates_context_readout(tmp_path):
     from opennote.chat.client import TokenUsage
 

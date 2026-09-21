@@ -29,10 +29,22 @@ def _single_shot(
     notebook: Notebook,
     client: LLMClient,
     max_tokens: int,
+    context_budget: int | None = 12000,
 ) -> str:
     """Single-shot grounded completion with notebook context + allowlist."""
+    from opennote.chat.context_budget import (
+        build_fitted_tagged_context,
+        fit_tagged_context,
+        fitted_results,
+    )
     from opennote.chat.prompt import build_tagged_context, build_tagged_user_message, render_system_post, render_system_pre
 
+    if context_budget is not None:
+        fitted = fit_tagged_context(results, budget_chars=context_budget)
+        results = fitted_results(fitted)
+        tagged = build_fitted_tagged_context(fitted)
+    else:
+        tagged = build_tagged_context(results)
     valid_tokens = [f"[{i+1}]" for i in range(len(results))]
     system_pre = render_system_pre(
         notebook_name=notebook.name,
@@ -50,7 +62,9 @@ def _single_shot(
         messages,
         max_tokens=max_tokens,
     )
-    return raw.strip(), system, messages
+    from opennote.chat.clean import clean_thinking_content
+
+    return clean_thinking_content(raw).strip(), system, messages
 
 
 def _drain_usage(client: LLMClient, acc: "TokenUsage") -> "TokenUsage":
@@ -72,9 +86,16 @@ def _multihop(
     client: LLMClient,
     retriever: Retriever,
     max_tokens: int,
+    context_budget: int | None = 12000,
 ) -> tuple[str, List[SearchResult]] | None:
     """Plan → per-query workers → synthesizer. Returns (answer, all_results) or None on fallback."""
+    from opennote.chat.clean import clean_thinking_content
     from opennote.chat.client import TokenUsage as _TU
+    from opennote.chat.context_budget import (
+        build_fitted_tagged_context,
+        fit_tagged_context,
+        fitted_results,
+    )
     from opennote.chat.planner import plan_queries
     from opennote.chat.prompt import build_tagged_context
     from opennote.chat.render import render
@@ -111,7 +132,12 @@ def _multihop(
             continue
 
         # Per-query worker — context escaped inside build_tagged_context
-        tagged = build_tagged_context(deduped)
+        if context_budget is not None:
+            _f = fit_tagged_context(deduped, budget_chars=context_budget)
+            tagged = build_fitted_tagged_context(_f)
+            deduped = fitted_results(_f)
+        else:
+            tagged = build_tagged_context(deduped)
         valid_tokens = [f"[{i+1}]" for i in range(len(deduped))]
         # Map worker's local [1]..[N] to global indices for synthesizer traceability
         # For now workers cite local tokens; synthesizer re-cites after merge.
@@ -129,6 +155,7 @@ def _multihop(
                 [{"role": "user", "content": f"Question: {question}\n\nInstructions: {pq.instructions}"}],
                 max_tokens=max_tokens,
             )
+            w_raw = clean_thinking_content(w_raw)
             acc = _drain_usage(client, acc)
         except Exception:
             w_raw = ""
@@ -139,7 +166,13 @@ def _multihop(
 
     # Synthesizer — sees all worker answers; must re-cite with global tokens
     global_tokens = [f"[{i+1}]" for i in range(len(all_results))]
-    tagged_all = build_tagged_context(all_results)
+    if context_budget is not None:
+        _fall = fit_tagged_context(all_results, budget_chars=context_budget)
+        all_results = fitted_results(_fall)
+        global_tokens = [f"[{i+1}]" for i in range(len(all_results))]
+        tagged_all = build_fitted_tagged_context(_fall)
+    else:
+        tagged_all = build_tagged_context(all_results)
     answers_block = "\n\n".join(f"--- Answer {i+1} ---\n{a}" for i, a in enumerate(worker_answers))
     synth_prompt = render(
         "synthesizer.jinja",
@@ -158,6 +191,7 @@ def _multihop(
         acc = _drain_usage(client, acc)
     except Exception:
         return None
+    final = clean_thinking_content(final)
 
     # stash summed provider usage for the caller (may be all-zero → estimate)
     try:
@@ -209,6 +243,7 @@ def ask(
     multihop: bool = False,
     use_bm25: Optional[bool] = None,
     bm25_alpha: float = 0.5,
+    context_budget: int | None = 12000,
 ) -> AskResult:
     """Answer ``question`` grounded in ``notebook`` with validated citations.
 
@@ -232,7 +267,7 @@ def ask(
         retriever = Retriever(notebook, **r_kwargs)
 
     if multihop:
-        mh = _multihop(question, notebook, client, retriever, max_tokens)
+        mh = _multihop(question, notebook, client, retriever, max_tokens, context_budget)
         if mh is not None:
             final_text, all_results, synth_prompt, synth_messages = mh
             answer = final_text.strip() or "sources don't contain this"
@@ -267,7 +302,7 @@ def ask(
             model=client.model,
         )
 
-    answer, system, messages = _single_shot(question, results, notebook, client, max_tokens)
+    answer, system, messages = _single_shot(question, results, notebook, client, max_tokens, context_budget)
 
     # Gate free-form through validator (defense 3)
     from opennote.validation.citation import validate_freeform_answer

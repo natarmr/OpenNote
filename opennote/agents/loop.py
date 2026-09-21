@@ -325,6 +325,12 @@ def agent_turn(
                         system2 = f"{_pre2}\n\nSources:\n{tagged}\n\n{_post2}" if tagged else f"{_pre2}\n\n{_post2}"
                         fb = client.complete(system2, [{"role": "user", "content": f"Question: {question}\n\n{_post2}"}], max_tokens=max_tokens)
                         try:
+                            from opennote.chat.clean import clean_thinking_content as _clean
+
+                            fb = _clean(fb)
+                        except Exception:
+                            pass
+                        try:
                             fu = getattr(client, "last_usage", None)
                             if isinstance(fu, _TU) and (fu.prompt_tokens or fu.completion_tokens):
                                 turn_usage = turn_usage + fu
@@ -481,6 +487,12 @@ def agent_turn(
             )
 
     answer = final_answer.strip()
+    try:
+        from opennote.chat.clean import clean_thinking_content
+
+        answer = clean_thinking_content(answer).strip()
+    except Exception:
+        pass
     footer, sources_used = used_sources(answer, retrieved)
     if footer:
         answer = f"{answer}\n\n{footer}"

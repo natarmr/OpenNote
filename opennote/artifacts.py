@@ -30,10 +30,12 @@ from opennote.fsutil import atomic_write_bytes
 class Artifact:
     """Represents a saved artifact."""
 
-    kind: str  # "markdown", "study_guide", "faq", "briefing", "timeline", "summary"
+    kind: str  # "markdown", "study_guide", "faq", "briefing", "timeline", "summary", "insight", "questions"
     title: str
-    body: str  # markdown body
+    body: str  # markdown body (without frontmatter)
     created: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    prompt_version: str = ""
+    sources: List[dict] = field(default_factory=list)
     # Derived: safe filename (no path separators, no reserved names)
     filename: str = field(init=False, default="")
     # Derived: full path on disk
@@ -78,25 +80,132 @@ def _atomic_write(markdown_text: str, path: Path) -> None:
     atomic_write_bytes(path, markdown_text.encode("utf-8"))
 
 
+# ---------------------------------------------------------------------------
+# Frontmatter (upstream Transformation/SourceInsight parity, back-compat)
+# ---------------------------------------------------------------------------
+
+PROMPT_VERSIONS = {
+    "markdown": "mindmap-v1",
+    "study_guide": "study-v1",
+    "faq": "faq-v1",
+    "briefing": "briefing-v1",
+    "timeline": "timeline-v1",
+    "summary": "summary-v1",
+    "questions": "questions-v1",
+    "insight": "insight-v1",
+}
+
+
+def _frontmatter(artifact: Artifact) -> str:
+    """YAML frontmatter: kind/title/created/prompt_version/sources (API-ready)."""
+    import json as _json
+
+    lines = ["---"]
+    lines.append(f'kind: "{artifact.kind}"')
+    safe_title = artifact.title.replace('"', "'")
+    lines.append(f'title: "{safe_title}"')
+    lines.append(f'created: "{artifact.created}"')
+    if artifact.prompt_version:
+        lines.append(f'prompt_version: "{artifact.prompt_version}"')
+    if artifact.sources:
+        lines.append("sources: " + _json.dumps(artifact.sources))
+    lines.append("---")
+    return "\n".join(lines) + "\n\n"
+
+
+def strip_frontmatter(text: str) -> str:
+    """Remove a leading --- ... --- block (back-compat read path)."""
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            close = text.find("\n", end + 4)
+            if close != -1:
+                return text[close + 1 :].lstrip("\n")
+    return text
+
+
+def load_artifact(path: Path) -> Artifact:
+    """Read an artifact file, stripping frontmatter into fields when present."""
+    import json as _json
+    import re as _re
+
+    raw = Path(path).read_text(encoding="utf-8")
+    kind, title, created, pver, sources = "markdown", Path(path).stem, "", "", []
+    body = raw
+    if raw.startswith("---"):
+        m = _re.match(r"^---\n(.*?)\n---\n?", raw, flags=_re.DOTALL)
+        if m:
+            fm = m.group(1)
+            body = raw[m.end() :].lstrip("\n")
+            for line in fm.splitlines():
+                if ":" not in line:
+                    continue
+                k, _, v = line.partition(":")
+                k, v = k.strip(), v.strip().strip('"')
+                if k == "kind":
+                    kind = v
+                elif k == "title":
+                    title = v
+                elif k == "created":
+                    created = v
+                elif k == "prompt_version":
+                    pver = v
+                elif k == "sources":
+                    try:
+                        sources = _json.loads(v)
+                    except Exception:
+                        sources = []
+    art = Artifact(kind=kind, title=title, body=body)
+    if created:
+        art.created = created
+    art.prompt_version = pver
+    art.sources = sources if isinstance(sources, list) else []
+    art.path = Path(path)
+    art.filename = Path(path).name
+    return art
+
+
+def export_artifact_json(artifact: Artifact) -> dict:
+    """JSON export compatible with upstream insight-style APIs."""
+    return {
+        "kind": artifact.kind,
+        "title": artifact.title,
+        "created": artifact.created,
+        "prompt_version": artifact.prompt_version or PROMPT_VERSIONS.get(artifact.kind, ""),
+        "sources": list(artifact.sources or []),
+        "body": artifact.body,
+    }
+
+
 def save_artifact(
     kind: str,
     title: str,
     body: str,
     notebook_dir: Path,
+    prompt_version: str = "",
+    sources: List[dict] | None = None,
 ) -> Artifact:
     """Save an artifact and return the :class:`Artifact` instance.
 
     Parameters
     ----------
-    kind: one of "markdown", "study_guide", "faq", "briefing", "timeline", "summary"
+    kind: one of "markdown", "study_guide", "faq", "briefing", "timeline", "summary", "insight", "questions"
     title: display title for the artifact
     body: markdown body content
     notebook_dir: path to the notebook folder (``./.opennote/notebooks/<name>`` or ``$OPENNOTE_HOME/notebooks``)
+    prompt_version: template version stamp (defaults from PROMPT_VERSIONS)
+    sources: [{index, citation}] list for traceability (upstream insight parity)
     """
-    artifact = Artifact(kind=kind, title=title, body=body)
+    artifact = Artifact(
+        kind=kind,
+        title=title,
+        body=body,
+        prompt_version=prompt_version or PROMPT_VERSIONS.get(kind, ""),
+        sources=list(sources or []),
+    )
     ad = _artifacts_dir(notebook_dir)
     final_path = ad / artifact.filename
-    _atomic_write(artifact.body, final_path)
+    _atomic_write(_frontmatter(artifact) + artifact.body, final_path)
     artifact.path = final_path
     return artifact
 
@@ -211,28 +320,54 @@ def _render_template(template: str, context: dict) -> str:
     return result
 
 
+def _render_studio(name: str, fallback: str, context: dict, question: str = "") -> str:
+    """Render opennote/prompt_templates/studio_*.jinja; fall back to legacy string."""
+    norm = {k.lower(): v for k, v in context.items()}
+    kwargs = {
+        "context": norm.get("context", ""),
+        "question": norm.get("question", question),
+        "CONTEXT": norm.get("context", ""),
+        "QUESTION": norm.get("question", question),
+    }
+    try:
+        from opennote.chat.render import render as _render
+
+        return _render(name, **kwargs)
+    except Exception:
+        return _render_template(fallback, context)
+
+
 def generate_study_guide(question: str, context: str) -> str:
-    return _render_template(STUDY_GUIDE_TEMPLATE, {"CONTEXT": context, "QUESTION": question})
+    return _render_studio("studio_study.jinja", STUDY_GUIDE_TEMPLATE, {"CONTEXT": context, "QUESTION": question}, question)
 
 
 def generate_faq(context: str) -> str:
-    return _render_template(FAQ_TEMPLATE, {"CONTEXT": context})
+    return _render_studio("studio_faq.jinja", FAQ_TEMPLATE, {"CONTEXT": context})
 
 
 def generate_briefing(question: str, context: str) -> str:
-    return _render_template(BRIEFING_TEMPLATE, {"CONTEXT": context, "QUESTION": question})
+    return _render_studio("studio_briefing.jinja", BRIEFING_TEMPLATE, {"CONTEXT": context, "QUESTION": question}, question)
 
 
 def generate_timeline(question: str, context: str) -> str:
-    return _render_template(TIMELINE_TEMPLATE, {"CONTEXT": context, "QUESTION": question})
+    return _render_studio("studio_timeline.jinja", TIMELINE_TEMPLATE, {"CONTEXT": context, "QUESTION": question}, question)
 
 
 def generate_source_summaries(context: str) -> str:
-    return _render_template(SOURCE_SUMMARY_TEMPLATE, {"CONTEXT": context})
+    return _render_studio("studio_summary.jinja", SOURCE_SUMMARY_TEMPLATE, {"CONTEXT": context})
 
 
 def generate_suggested_questions(question: str, context: str) -> str:
-    return _render_template(SUGGESTED_QUESTIONS_TEMPLATE, {"CONTEXT": context, "QUESTION": question})
+    return _render_studio("studio_questions.jinja", SUGGESTED_QUESTIONS_TEMPLATE, {"CONTEXT": context, "QUESTION": question}, question)
+
+
+def generate_insight(context: str, source_label: str = "") -> str:
+    """Per-source insight body (upstream SourceInsight analog, markdown)."""
+    header = f"## Insight: {source_label}\n\n" if source_label else ""
+    return (
+        header
+        + _render_studio("studio_summary.jinja", SOURCE_SUMMARY_TEMPLATE, {"CONTEXT": context})
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -261,3 +396,20 @@ def make_source_summaries(context: str, notebook_dir: Path, title: str = "Source
 
 def make_suggested_questions(question: str, context: str, notebook_dir: Path, title: str = "Suggested Questions") -> Artifact:
     return save_artifact(kind="questions", title=title, body=generate_suggested_questions(question, context), notebook_dir=notebook_dir)
+
+
+def make_insight(
+    context: str,
+    notebook_dir: Path,
+    title: str = "Insight",
+    source_label: str = "",
+    sources: List[dict] | None = None,
+) -> Artifact:
+    """Save a per-source insight (upstream SourceInsight analog)."""
+    return save_artifact(
+        kind="insight",
+        title=title,
+        body=generate_insight(context, source_label),
+        notebook_dir=notebook_dir,
+        sources=sources,
+    )

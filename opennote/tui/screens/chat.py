@@ -710,6 +710,7 @@ class ChatScreen(Screen):
         return str(art.path)
 
     def on_turn_result(self, msg: TurnResult) -> None:
+        self._notify_done("Answer ready.")
         self.transcript.add_answer(msg.answer)
         usage = getattr(msg, "usage", None)
         # Persistent opencode-style readout in the prompt bar (survives scroll).
@@ -723,28 +724,34 @@ class ChatScreen(Screen):
         self.prompt.set_idle()
 
     def on_turn_failed(self, msg: TurnFailed) -> None:
+        self._notify_done(f"Ask failed: {msg.error}")
         self.transcript.add_error(msg.error)
         self.prompt.set_idle()
 
     def on_turn_cancelled_msg(self, msg: TurnCancelledMsg) -> None:
+        self._notify_done("Ask interrupted.")
         self.transcript.add_info("Interrupted.")
         self.prompt.set_idle()
 
     def on_search_result_msg(self, msg: SearchResultMsg) -> None:
+        self._notify_done("Search results ready.")
         self.transcript.add_info(f"Search: {msg.question}")
         self.transcript.write(msg.text)
         self.transcript.write("")
         self.prompt.set_idle()
 
     def on_search_failed(self, msg: SearchFailed) -> None:
+        self._notify_done(f"Search failed: {msg.error}")
         self.transcript.add_error(msg.error)
         self.prompt.set_idle()
 
     def on_studio_result_msg(self, msg: StudioResultMsg) -> None:
+        self._notify_done(f"Studio {msg.label} ready.")
         self.transcript.add_info(f"Studio {msg.label}: {msg.detail}")
         self.prompt.set_idle()
 
     def on_studio_failed(self, msg: StudioFailed) -> None:
+        self._notify_done(f"Studio failed: {msg.error}")
         self.transcript.add_error(f"Studio: {msg.error}")
         self.prompt.set_idle()
 
@@ -788,6 +795,18 @@ class ChatScreen(Screen):
         self.app.push_screen(
             HelpDialog('Help', 'Press ctrl+p to see all available actions and commands in any context.')
         )
+
+    def _notify_done(self, message: str) -> None:
+        """Toast a background completion (visible even over modal screens)."""
+        try:
+            self.app.notify(message, title="OpenNote")
+        except Exception:
+            pass
+
+    def _play_snake(self, _arg: str = "") -> None:
+        # Deliberately allowed while busy: this is the waiting-room game.
+        from opennote.tui.screens.snake import SnakeScreen
+        self.app.push_screen(SnakeScreen(status_fn=lambda: self.prompt.status_text))
 
     def _clear_transcript(self, _arg: str = "") -> None:
         if self.notebook is not None:
@@ -1385,12 +1404,14 @@ class ChatScreen(Screen):
         )
 
     def on_ingest_result_msg(self, msg: IngestResultMsg) -> None:
+        self._notify_done(f"Indexed {msg.count} chunk(s) from {msg.target}")
         self.transcript.add_info(f"Indexed {msg.count} chunk(s) from {msg.target}")
         if msg.fallback:
             self.transcript.add_info("Note: local fallback used (Docling missing C++ compiler). Install VS Build Tools or run /ingest with --parser fallback for consistent behavior.")
         self.prompt.set_idle()
 
     def on_ingest_failed(self, msg: IngestFailed) -> None:
+        self._notify_done(f"Ingest failed: {msg.error}")
         self.transcript.add_error(f"Ingest failed: {msg.error}")
         self.prompt.set_idle()
 

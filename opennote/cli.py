@@ -314,11 +314,13 @@ def ask_cmd(
     multihop: bool = typer.Option(False, "--multihop", help="Decompose into sub-queries (plan → workers → synthesize)."),
     bm25: bool = typer.Option(True, "--bm25/--no-bm25", help="Hybrid BM25 + vectors (default: on)."),
     bm25_alpha: float = typer.Option(0.5, "--bm25-alpha", help="Hybrid blend: 0=BM25, 1=vector."),
+    context_budget: Optional[int] = typer.Option(12000, "--context-budget", help="Max context chars (0=unlimited)."),
 ):
     """Grounded, cited Q&A over a notebook's sources."""
     nb = _notebook(notebook)
+    budget = None if context_budget == 0 else context_budget
     try:
-        result = ask(nb, question, provider_id=provider, top_k=top_k, multihop=multihop, use_bm25=bm25, bm25_alpha=bm25_alpha)
+        result = ask(nb, question, provider_id=provider, top_k=top_k, multihop=multihop, use_bm25=bm25, bm25_alpha=bm25_alpha, context_budget=budget)
     except (ChatError, ValueError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -739,6 +741,36 @@ def capabilities_cmd():
     typer.echo(f"plugins_loaded: {getattr(caps, 'plugins_loaded', [])}")
     typer.echo(f"skill_scripts_allowed: {getattr(caps, 'skill_scripts_allowed', False)}")
     typer.echo(f"agents_available: {getattr(caps, 'agents_available', [])}")
+
+
+@app.command("artifacts")
+def artifacts_cmd(
+    action: str = typer.Argument("export", help="Action: export"),
+    notebook: Optional[str] = typer.Option(None, "--notebook", "-n", help="Notebook (default: most recent in this dir)."),
+    format: str = typer.Option("json", "--format", "-f", help="Export format: json."),
+):
+    """Export studio artifacts (frontmatter + body) as JSON (upstream-insight compatible)."""
+    import json as _json
+
+    if action != "export":
+        typer.echo(f"Unknown action '{action}'. Use: export", err=True)
+        raise typer.Exit(1)
+    nb = _notebook(notebook)
+    from opennote.artifacts import export_artifact_json, load_artifact
+
+    ad = nb.directory / "artifacts"
+    files = sorted(ad.glob("*.md")) if ad.is_dir() else []
+    items = []
+    for f in files:
+        try:
+            items.append(export_artifact_json(load_artifact(f)))
+        except Exception:
+            continue
+    if format == "json":
+        typer.echo(_json.dumps(items, indent=2))
+    else:
+        typer.echo(f"Unknown format '{format}'. Use: json", err=True)
+        raise typer.Exit(1)
 
 
 @app.command("version")

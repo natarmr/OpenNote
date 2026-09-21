@@ -217,6 +217,129 @@ def save_artifact(
 MAX_MINDMAP_DEPTH = 4
 
 
+# ---------------------------------------------------------------------------
+# Mind-map tree model: parse markdown bodies into a renderable tree
+# (powers the in-terminal mindmap viewer: inline Rich Tree + popup
+# Textual Tree + `opennote artifacts show --tree`). ASCII-only output
+# per the TUI chrome contract.
+# ---------------------------------------------------------------------------
+
+MAX_MINDMAP_LABEL = 100
+
+
+@dataclass
+class MindNode:
+    """A single mind-map node (label + ordered children)."""
+
+    label: str
+    children: List["MindNode"] = field(default_factory=list)
+
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
+_BULLET_RE = re.compile(r"^([ \t]*)[-*+]\s+(.*?)\s*$")
+_NUMBERED_RE = re.compile(r"^([ \t]*)\d+[.)]\s+(.*?)\s*$")
+_MD_FMT_RE = re.compile(r"(\*\*|__|\*|_|`|~~)")
+
+
+def _clean_label(text: str) -> str:
+    """Strip markdown inline formatting + trailing colons, truncate."""
+    label = _MD_FMT_RE.sub("", text).strip().rstrip(":").strip()
+    label = re.sub(r"\s+", " ", label)
+    if len(label) > MAX_MINDMAP_LABEL:
+        label = label[: MAX_MINDMAP_LABEL - 1].rstrip() + "…"
+    return label
+
+
+def parse_mindmap(body: str, title: str = "", max_depth: int = MAX_MINDMAP_DEPTH) -> MindNode:
+    """Parse a markdown mind-map *body* into a :class:`MindNode` tree.
+
+    Handles headings (``#``-``####``), bullets (``-``/``*``), numbered
+    lists (``1.``/``1)``), and plain paragraphs (attached as nodes or
+    continuations). Depth is capped at *max_depth*; deeper items fold
+    into their parent. Never raises on weird input — worst case returns
+    a single root node.
+    """
+    root_label = _clean_label(title) or "Mind map"
+    try:
+        text = strip_frontmatter(body or "")
+    except Exception:
+        text = body or ""
+    root = MindNode(label=root_label)
+    # (depth, node) stack; root sits at depth -1 so H1 lands at 0.
+    stack: List[tuple] = [(-1, root)]
+    seen_h1 = False
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            continue
+        m = _HEADING_RE.match(line.lstrip())
+        if m:
+            depth = len(m.group(1)) - 1
+            label = _clean_label(m.group(2))
+            # First H1 becomes the root title instead of a child.
+            if depth == 0 and not seen_h1 and not root.children:
+                seen_h1 = True
+                if label:
+                    root.label = label
+                continue
+            seen_h1 = seen_h1 or depth == 0
+        else:
+            m2 = _BULLET_RE.match(line) or _NUMBERED_RE.match(line)
+            if m2:
+                indent = m2.group(1).replace("\t", "  ")
+                depth = 1 + len(indent) // 2
+                label = _clean_label(m2.group(2))
+            else:
+                # Plain paragraph: continuation of the last node when the
+                # previous line was also plain text, else a new leaf.
+                label = _clean_label(line.strip())
+                prev_depth, prev_node = stack[-1]
+                if prev_node is not root and getattr(prev_node, "_plain", False):
+                    prev_node.label = _clean_label(prev_node.label + " " + label)
+                    continue
+                depth = min(prev_depth + 1, max_depth) if prev_node is not root else 1
+        if not label:
+            continue
+        depth = max(0, min(depth, max_depth))
+        while len(stack) > 1 and stack[-1][0] >= depth:
+            stack.pop()
+        node = MindNode(label=label)
+        node._plain = m is None and (m2 is None)  # type: ignore[attr-defined]
+        stack[-1][1].children.append(node)
+        stack.append((depth, node))
+
+    for _, node in stack:
+        node.__dict__.pop("_plain", None)
+    return root
+
+
+def to_ascii_tree(node: MindNode) -> str:
+    """Render a :class:`MindNode` tree as ASCII (``|--`` / ```--``)."""
+    lines = [node.label]
+    def _walk(children: List[MindNode], prefix: str) -> None:
+        for i, child in enumerate(children):
+            last = i == len(children) - 1
+            branch, cont = ("`-- ", "    ") if last else ("|-- ", "|   ")
+            lines.append(f"{prefix}{branch}{child.label}")
+            _walk(child.children, prefix + cont)
+    _walk(node.children, "")
+    return "\n".join(lines)
+
+
+def short_artifact_display(path: Path | str, notebook_dir: Path | str | None = None) -> str:
+    """Short ``<notebook>/artifacts/<file>`` display for deep artifact paths."""
+    p = Path(path)
+    if notebook_dir is not None:
+        return f"{Path(notebook_dir).name}/artifacts/{p.name}"
+    parts = p.parts
+    if "artifacts" in parts:
+        i = parts.index("artifacts")
+        nb = parts[i - 1] if i > 0 else ""
+        return f"{nb}/artifacts/{p.name}" if nb else f"artifacts/{p.name}"
+    return p.name
+
+
 def create_mindmap(topic: str, items: List[str], notebook_dir: Path) -> Artifact:
     """Create a mind‑map artifact as markdown.
 

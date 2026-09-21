@@ -29,8 +29,11 @@ class Transcript(RichLog):
     def _reveal(self) -> None:
         """Ask the owning ChatScreen to leave the welcome view, if it hasn't
         already. Safe to call unconditionally - a screen without this hook,
-        or one that's already revealed, just no-ops."""
-        reveal = getattr(self.screen, "_reveal_transcript", None)
+        one that's already revealed, or an unmounted widget just no-ops."""
+        try:
+            reveal = getattr(self.screen, "_reveal_transcript", None)
+        except Exception:
+            return
         if callable(reveal):
             reveal()
 
@@ -60,6 +63,22 @@ class Transcript(RichLog):
     def add_info(self, message: str) -> None:
         self._reveal()
         self.write(Text(message, style=self._color("text_muted", "#808080")))
+        self.write("")
+
+    def add_mindmap(self, title: str, root) -> None:
+        """Render a parsed mind-map tree inline (ASCII guides)."""
+        from rich.tree import Tree
+
+        self._reveal()
+        tree = Tree(title, guide_style=self._color("text_muted", "#808080"))
+
+        def _add(branch, node) -> None:
+            for child in node.children:
+                leaf = branch.add(child.label)
+                _add(leaf, child)
+
+        _add(tree, root)
+        self.write(tree)
         self.write("")
 
     def clear(self) -> None:

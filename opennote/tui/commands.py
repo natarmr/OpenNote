@@ -66,7 +66,7 @@ def make_commands(screen) -> List[Command]:
         Command("suggest", "Suggest follow-up questions", getattr(screen, "_start_studio_command", lambda k: lambda a="": None)("suggest"), arg_hint="<topic>", category="Studio"),
         Command("audio", "Narrate text as audio", getattr(screen, "_start_studio_command", lambda k: lambda a="": None)("audio"), arg_hint="<text>", category="Studio"),
         Command("video", "Narrate a slideshow video", getattr(screen, "_start_studio_command", lambda k: lambda a="": None)("video"), arg_hint="<topic>", category="Studio"),
-        Command("open", "Open an artifact file or the artifacts folder", _handler(screen, "_open_artifact"), arg_hint="[file]", category="Studio"),
+        Command("open", "View an artifact in-terminal (mindmaps as a tree) or open externally", _handler(screen, "_open_artifact"), arg_hint="[file]", category="Studio"),
         Command("theme", "Switch dark/light theme", _handler(screen, "_switch_theme"), arg_hint="<dark|light>", category="Appearance"),
         Command("palette", "Open the command palette", _handler(screen, "_open_palette"), category="General"),
         Command("skills", "List installed skills", _handler(screen, "_list_skills"), category="Skills"),

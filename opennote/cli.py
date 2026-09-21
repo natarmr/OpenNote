@@ -745,21 +745,46 @@ def capabilities_cmd():
 
 @app.command("artifacts")
 def artifacts_cmd(
-    action: str = typer.Argument("export", help="Action: export"),
+    action: str = typer.Argument("export", help="Action: export | show"),
+    name: Optional[str] = typer.Argument(None, help="Artifact filename (or substring) for 'show'."),
     notebook: Optional[str] = typer.Option(None, "--notebook", "-n", help="Notebook (default: most recent in this dir)."),
     format: str = typer.Option("json", "--format", "-f", help="Export format: json."),
+    tree: bool = typer.Option(False, "--tree", help="Render mind-maps as an ASCII tree (show only)."),
 ):
-    """Export studio artifacts (frontmatter + body) as JSON (upstream-insight compatible)."""
+    """Export studio artifacts as JSON, or show one in the terminal."""
     import json as _json
 
-    if action != "export":
-        typer.echo(f"Unknown action '{action}'. Use: export", err=True)
-        raise typer.Exit(1)
     nb = _notebook(notebook)
-    from opennote.artifacts import export_artifact_json, load_artifact
+    from opennote.artifacts import (
+        export_artifact_json,
+        load_artifact,
+        parse_mindmap,
+        short_artifact_display,
+        to_ascii_tree,
+    )
 
     ad = nb.directory / "artifacts"
     files = sorted(ad.glob("*.md")) if ad.is_dir() else []
+    if action == "show":
+        target = None
+        if name:
+            exact = ad / name
+            target = exact if exact.is_file() else next((f for f in files if name.lower() in f.name.lower()), None)
+        elif files:
+            target = sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+        if target is None:
+            typer.echo("No matching artifact. Use 'opennote artifacts export' to list.", err=True)
+            raise typer.Exit(1)
+        art = load_artifact(target)
+        typer.echo(f"# {art.title}  [{short_artifact_display(target, nb.directory)}]")
+        if tree or art.kind == "mindmap":
+            typer.echo(to_ascii_tree(parse_mindmap(art.body, title=art.title)))
+        else:
+            typer.echo(art.body)
+        return
+    if action != "export":
+        typer.echo(f"Unknown action '{action}'. Use: export | show", err=True)
+        raise typer.Exit(1)
     items = []
     for f in files:
         try:

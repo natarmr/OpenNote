@@ -747,7 +747,34 @@ class ChatScreen(Screen):
 
     def on_studio_result_msg(self, msg: StudioResultMsg) -> None:
         self._notify_done(f"Studio {msg.label} ready.")
-        self.transcript.add_info(f"Studio {msg.label}: {msg.detail}")
+        detail = msg.detail
+        # Short <notebook>/artifacts/<file> display for deep absolute paths.
+        try:
+            from pathlib import Path as _Path
+
+            from opennote.artifacts import short_artifact_display as _short
+
+            nb_dir = getattr(self.notebook, "directory", None)
+            if nb_dir is not None and _Path(str(detail)).is_file():
+                detail = _short(detail, nb_dir)
+        except Exception:
+            detail = msg.detail
+        self.transcript.add_info(f"Studio {msg.label}: {detail}")
+        # Inline mind-map preview right in the transcript.
+        if msg.label == "mindmap":
+            try:
+                from pathlib import Path as _Path
+
+                from opennote.artifacts import load_artifact as _load
+                from opennote.artifacts import parse_mindmap as _parse
+
+                p = _Path(str(msg.detail))
+                if p.is_file():
+                    art = _load(p)
+                    self.transcript.add_mindmap(art.title, _parse(art.body, title=art.title))
+                    self.transcript.add_info("Tip: /open <file> reopens this map in a collapsible viewer.")
+            except Exception:
+                pass
         self.prompt.set_idle()
 
     def on_studio_failed(self, msg: StudioFailed) -> None:
@@ -1133,20 +1160,59 @@ class ChatScreen(Screen):
             self.transcript.add_error("Notebook is not available.")
             return
         artifacts_dir = self.notebook.directory / "artifacts"
-        target = artifacts_dir
+        if not artifacts_dir.is_dir():
+            self.transcript.add_info("No artifacts yet. Use /mindmap, /study, /faq, etc.")
+            return
         arg = arg.strip()
-        if arg:
-            candidate = (artifacts_dir / arg).resolve()
-            try:
-                candidate.relative_to(artifacts_dir.resolve())
-            except ValueError:
-                self.transcript.add_error("Path escapes the notebook's artifacts directory.")
+        if not arg:
+            # No arg: pick from the notebook's artifacts (short names).
+            files = sorted(artifacts_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not files:
+                self.transcript.add_info("No artifacts yet. Use /mindmap, /study, /faq, etc.")
                 return
-            if candidate.is_file():
-                target = candidate
+            from opennote.artifacts import short_artifact_display as _short
+
+            items = [(f.name, _short(f, self.notebook.directory)) for f in files]
+            item_list(self.app, "Open artifact", items, on_pick=self._on_artifact_picked)
+            return
+        candidate = (artifacts_dir / arg).resolve()
+        try:
+            candidate.relative_to(artifacts_dir.resolve())
+        except ValueError:
+            self.transcript.add_error("Path escapes the notebook's artifacts directory.")
+            return
+        target = candidate
+        if not target.is_file():
+            # Forgiving match: unique substring of the filename.
+            matches = [f for f in artifacts_dir.glob("*.md") if arg.lower() in f.name.lower()]
+            if len(matches) == 1:
+                target = matches[0]
+            elif len(matches) > 1:
+                from opennote.artifacts import short_artifact_display as _short
+
+                items = [(f.name, _short(f, self.notebook.directory)) for f in matches]
+                item_list(self.app, "Open artifact (multiple matches)", items, on_pick=self._on_artifact_picked)
+                return
         if not target.exists():
             self.transcript.add_info("No artifacts yet. Use /mindmap, /study, /faq, etc.")
             return
+        if target.is_file():
+            # Mind-maps render in-terminal; everything else opens externally.
+            try:
+                from opennote.artifacts import load_artifact as _load
+                from opennote.artifacts import parse_mindmap as _parse
+                from opennote.artifacts import short_artifact_display as _short
+                from opennote.tui.dialogs import MindmapDialog
+
+                art = _load(target)
+                if art.kind == "mindmap":
+                    root = _parse(art.body, title=art.title)
+                    self.app.push_screen(
+                        MindmapDialog(art.title, root, _short(target, self.notebook.directory))
+                    )
+                    return
+            except Exception:
+                pass
         try:
             if os.name == "nt":
                 os.startfile(str(target))  # type: ignore[attr-defined]
@@ -1161,6 +1227,10 @@ class ChatScreen(Screen):
             self.transcript.add_error(f"Failed to open {target}: {e}")
             return
         self.transcript.add_info(f"Opened {target}")
+
+    def _on_artifact_picked(self, name: Optional[str]) -> None:
+        if name:
+            self._open_artifact(name)
 
     # -- notebooks: 4-action picker ---------------------------------------
 

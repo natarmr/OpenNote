@@ -90,6 +90,52 @@ def item_list(
     app.push_screen(dialog, callback=on_pick)
 
 
+class MindmapDialog(ModalScreen):
+    """In-terminal mind-map viewer: collapsible ASCII tree of an artifact."""
+
+    BINDINGS = [Binding("escape", "dismiss_modal", "Close", show=False)]
+
+    def __init__(self, title: str, root, short_path: str = "", *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._title = title
+        self._root = root
+        self._short_path = short_path
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import Tree
+
+        with Vertical(id="dialog", classes="dialog"):
+            yield Label(self._title, id="dialog-title")
+            yield Tree(self._title, id="mindmap-tree")
+            hint = "up/down navigate - left/right collapse/expand - esc close"
+            if self._short_path:
+                hint = f"{self._short_path}  |  {hint}"
+            yield Label(hint, id="dialog-hint", classes="muted")
+
+    def on_mount(self) -> None:
+        from textual.widgets import Tree
+
+        tree = self.query_one("#mindmap-tree", Tree)
+        tree.focus()
+
+        def _add(tnode, mnode) -> None:
+            for child in mnode.children:
+                if child.children:
+                    leaf = tnode.add(child.label)
+                    _add(leaf, child)
+                else:
+                    tnode.add_leaf(child.label)
+
+        _add(tree.root, self._root)
+        try:
+            tree.root.expand_all()
+        except Exception:
+            tree.root.expand()
+
+    def action_dismiss_modal(self) -> None:
+        self.dismiss()
+
+
 class HelpDialog(ModalScreen):
     """A dismissible info dialog with an Okay button."""
 

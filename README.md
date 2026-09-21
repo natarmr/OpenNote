@@ -81,7 +81,7 @@ iwr -useb https://ramratan.in/install.ps1 | iex
 pip install -e ".[dev]"
 ```
 
-*Note:* if you already have an `opennote` npm package installed globally, it shadows the CLI on PATH. Use `py -m opennote.cli <cmd>` as an unambiguous alternative.
+*Note:* if you already have an `opennote` npm package installed globally, it shadows the CLI on PATH. Uninstall it (`npm uninstall -g opennote`) or use `py -m opennote.cli <cmd>` as an unambiguous fallback.
 
 ---
 

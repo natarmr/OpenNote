@@ -46,7 +46,7 @@ palette.
 | `/suggest` `<topic>` | `/suggest quarterly results` | Suggest follow-up questions |
 | `/audio` `<text>` | `/audio Once upon a time` | Narrate text as audio |
 | `/video` `<topic>` | `/video quarterly results` | Narrate a slideshow video |
-| `/open` `[file]` | `/open` / `/open my-report.pdf` | Open an artifact or the artifacts folder |
+| `/open` `[file]` | `/open` / `/open kimi` | Pick an artifact to view in-terminal (mindmaps as a tree) or open externally |
 
 ### Appearance
 | Command | Usage | Description |

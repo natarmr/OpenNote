@@ -2,13 +2,13 @@
 
 ## Quickstart
 
-- Run all core tests: `py -m pytest -q`
-- TUI needs a display/terminal: use `py -m textual` or run the CLI `py -m opennote.cli`
+- Run all core tests: `pytest -q`
+- Bare `opennote` launches the TUI (no subcommand) and runs every CLI command (`opennote ask/search/ingest/...`)
 
 ## Environment / Launch
 
-- Launcher is `py` (not `python`); use `py -m ...` for all commands
-- No `python` on PATH — all invocations use the `py` wrapper
+- Prefer the bare installed commands: `opennote`, `pytest` (both on PATH via `pip install -e ".[dev]"`)
+- Fallback when the console scripts are missing: `py -m opennote.cli ...` / `py -m pytest ...` (launcher is `py`, not `python`)
 - Tests may fail if `TAVILY_API_KEY` is absent (web search hidden); set it to enable Tavily
 
 ## Core Packages & Entry Points
@@ -32,18 +32,18 @@
 - Slash commands: `/studio`, `/mindmap`, `/study`, `/faq`, `/briefing`, `/timeline`, `/suggest`, `/audio`, `/video`, `/open`, `/skills`, `/skill`, `/plugins`, `/agents`, `/agent`, `/capabilities`, `/context`, `/snake` (waiting-room game, allowed while busy; completions toast over the modal)
 - Context meter (`opennote/context_meter.py`, `engg_choices.md:E12`): provider-reported tokens when available (`~` estimate otherwise); 32-col right `SideBar` (session/context/services/footer, hidden <112 cols) + persistent `ctx` readout in prompt bar + `/context` panel; spend in `<notebook>/usage.json`; TUI chrome is ASCII-only
 - Transcript shows results; graceful degradation when backends unavailable
-- Run TUI tests: `py -m pytest tests/test_tui_app.py` (may have import errors if Textual not fully set up)
+- Run TUI tests: `pytest tests/test_tui_app.py` (may have import errors if Textual not fully set up)
 
 ## Tests
 
-- Run the full suite: `py -m pytest -q` — **356/356 pass** (includes `tests/test_e2e_grounded.py`); `py -m pytest tests/data/kimi.tsv` golden: `opennote golden tests/data/kimi.tsv`
-- Run TUI tests only: `py -m pytest tests/test_tui_app.py`
+- Run the full suite: `pytest -q` — **410/410 pass** (includes `tests/test_e2e_grounded.py`); `pytest tests/data/kimi.tsv` golden: `opennote golden tests/data/kimi.tsv`
+- Run TUI tests only: `pytest tests/test_tui_app.py`
 - `test_schemas_have_both_tools` expects `{"search", "list_sources", "web_search", "read_page", "submit_grounded_answer"}` (core only; dynamic tools via `get_tool_schemas`)
 
 ## Known Issues / Blockers
 
 - Groq TTS requires orpheus terms acceptance; other backends built-to-spec + mock-tested
-- No `python` on PATH — always use `py -m ...`
+- No `python` on PATH — always use `py -m ...` as fallback when bare `opennote`/`pytest` are missing
 
 ## Workflow Order
 

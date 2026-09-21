@@ -132,3 +132,22 @@ def test_remove_source_cmd(cli_mod):
     assert "Removed" in result.output
     reloaded = cli_mod.get_manager().get("default")
     assert "/tmp/a.txt" not in reloaded.sources
+
+
+def test_bare_opennote_entry_point_registered():
+    """The bare `opennote` console script must map to opennote.cli:app."""
+    import pytest
+
+    dist = pytest.importorskip("importlib.metadata").distribution("opennote")
+    scripts = [ep for ep in dist.entry_points if ep.name == "opennote"]
+    assert scripts, "no `opennote` console script registered"
+    assert any(ep.value == "opennote.cli:app" for ep in scripts)
+    assert scripts[0].load() is pytest.importorskip("opennote.cli").app
+
+
+def test_python_m_opennote_module():
+    """`python -m opennote ...` exposes the same app as the bare command."""
+    import opennote.__main__ as main_mod
+    import opennote.cli as cli_mod
+
+    assert main_mod.app is cli_mod.app

@@ -36,8 +36,8 @@ if (-not $installed) {
     if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed"; exit 1 }
 }
 
-# 3. Verify
-try { & $pythonBin -m opennote --help | Out-Null; Write-Host "OpenNote installed successfully! Run: opennote --help (or: $pythonBin -m opennote --help)"; exit 0 } catch {}
-if (Get-Command opennote -ErrorAction SilentlyContinue) { Write-Host "OpenNote installed successfully! Run: opennote --help"; exit 0 }
-Write-Error "Installation may need PATH adjustment. Try: $pythonBin -m opennote --help"
+# 3. Verify (bare console script first, python -m fallback)
+if (Get-Command opennote -ErrorAction SilentlyContinue) { try { opennote --help | Out-Null; Write-Host "OpenNote installed successfully! Run: opennote --help"; exit 0 } catch {} }
+try { & $pythonBin -m opennote.cli --help | Out-Null; Write-Host "OpenNote installed successfully! (console script not on PATH yet) Run: $pythonBin -m opennote.cli --help"; exit 0 } catch {}
+Write-Error "Installation may need PATH adjustment. Try: $pythonBin -m opennote.cli --help"
 exit 1

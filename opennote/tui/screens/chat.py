@@ -665,15 +665,84 @@ class ChatScreen(Screen):
     async def _run_video(self, topic: str) -> None:
         notebook = self.notebook
         try:
+            from opennote.retrieval.retriever import Retriever
             from opennote.video import save_video_artifact
 
-            art_path = save_video_artifact(topic, notebook.artifacts_dir, notebook.name)
+            try:
+                retriever = self._retriever or Retriever(notebook, top_k=8)
+                results = retriever.search(topic)
+            except ValueError:
+                self.app.call_from_thread(
+                    self.post_message, StudioFailed("No sources indexed yet. Run /ingest first.")
+                )
+                return
+            if self._client is not None:
+                script_json = self._slides_script_json(topic, results)
+            else:
+                script_json = self._fallback_slides_json(topic, results)
+            art_path = save_video_artifact(script_json, notebook.artifacts_dir, notebook.name)
             detail = str(art_path)
         except Exception as e:
             logger.exception("Video generation failed")
             self.app.call_from_thread(self.post_message, StudioFailed(str(e)))
             return
         self.app.call_from_thread(self.post_message, StudioResultMsg("video", detail))
+
+    def _slides_context(self, results) -> str:
+        parts = []
+        for i, r in enumerate(results, start=1):
+            fn = r.metadata.get("filename", "unknown")
+            chunk = r.content[:800].replace("\n", " ")
+            parts.append(f"[{i}] {fn}: {chunk}")
+        return "\n".join(parts) if parts else "No context available."
+
+    def _slides_script_json(self, topic: str, results) -> str:
+        """Ask the LLM for a slide-deck JSON script grounded in *results*."""
+        import json as _json
+
+        context_text = self._slides_context(results)
+        prompt = (
+            f"You are a slideshow script writer. Using ONLY the context below, write a "
+            f"3-5 slide narrated slideshow about: {topic}\n\n"
+            f"Return ONLY a JSON array (no markdown fences, no commentary). Each slide must have:\n"
+            f'- "title": short slide title\n'
+            f'- "bullets": 2-4 short bullet strings\n'
+            f'- "narration": 1-2 sentences to narrate, grounded in the context with [n] citations\n\n'
+            f"Context:\n{context_text}"
+        )
+        answer: str = self._client.chat([{"role": "user", "content": prompt}]).content
+        text = answer.strip()
+        # Tolerate models wrapping JSON in fences.
+        if text.startswith("```"):
+            text = text.strip("`").strip()
+            if text.lower().startswith("json"):
+                text = text[4:].strip()
+        try:
+            slides = _json.loads(text)
+        except Exception as e:
+            raise ValueError(f"Model did not return slide JSON: {e}")
+        if not isinstance(slides, list) or not slides:
+            raise ValueError("Model returned an empty slide list.")
+        return _json.dumps(slides)
+
+    def _fallback_slides_json(self, topic: str, results) -> str:
+        """Deterministic slide script from retrieval chunks (no LLM needed)."""
+        import json as _json
+
+        slides = []
+        for i, r in enumerate(results[:4], start=1):
+            fn = r.metadata.get("filename", "unknown")
+            snippet = " ".join(r.content.strip().split())[:400]
+            slides.append(
+                {
+                    "title": f"{topic} ({i})",
+                    "bullets": [f"Source: {fn}", snippet[:120]],
+                    "narration": snippet,
+                }
+            )
+        if not slides:
+            slides = [{"title": topic, "bullets": ["No context available."], "narration": topic}]
+        return _json.dumps(slides)
 
     def _generate_studio_artifact(self, kind: str, topic: str, notebook: Notebook) -> str:
         from opennote.artifacts import (

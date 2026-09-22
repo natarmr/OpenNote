@@ -485,5 +485,14 @@ def save_video_artifact(
         # Return the script path as fallback
         return result.script_path
     else:
-        # Return error info
-        return f"artifacts/{notebook_name}/video-error.md"
+        # Materialize the error so the returned path always exists
+        # (callers display it; a dangling path is worse than an honest note).
+        err_path = Path(output_dir) / "video-error.md"
+        try:
+            err_path.write_text(
+                f"# Video generation failed\n\n{result.error or 'unknown error'}\n",
+                encoding="utf-8",
+            )
+            return str(err_path)
+        except OSError:
+            return f"artifacts/{notebook_name}/video-error.md"

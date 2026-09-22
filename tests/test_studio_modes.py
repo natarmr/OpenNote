@@ -255,6 +255,60 @@ def test_cli_check_empty_notebook_skips(tmp_path, monkeypatch):
     assert "SKIP" in result.output or "SKIP" in result.stderr
 
 
+def test_video_error_path_materializes(tmp_path):
+    """save_video_artifact must never return a dangling path (live /video bug)."""
+    from pathlib import Path as _Path
+
+    from opennote.video import save_video_artifact
+
+    out = save_video_artifact("not json at all", tmp_path, "t")
+    assert _Path(out).is_file(), f"video error path missing: {out}"
+
+
+def test_fallback_slides_json_valid():
+    import json as _json
+
+    stub = _stub_screen()
+    script = ChatScreen._fallback_slides_json(stub, "retrieval", _results())
+    slides = _json.loads(script)
+    assert isinstance(slides, list) and slides
+    for s in slides:
+        assert s["title"] and isinstance(s["bullets"], list) and s["narration"]
+
+
+def test_slides_script_json_strips_fences():
+    import json as _json
+
+    from opennote.chat.client import ChatResponse
+
+    class FencedLlm:
+        provider_id = "test"
+        model = "mock"
+
+        def chat(self, messages):
+            assert "JSON array" in messages[0]["content"]
+            return ChatResponse(content='```json\n[{"title": "T", "bullets": ["b"], "narration": "n"}]\n```')
+
+    stub = _stub_screen(client=FencedLlm())
+    slides = _json.loads(ChatScreen._slides_script_json(stub, "retrieval", _results()))
+    assert slides[0]["title"] == "T"
+
+
+def test_slides_script_json_rejects_garbage():
+    from opennote.chat.client import ChatResponse
+
+    class GarbageLlm:
+        provider_id = "test"
+        model = "mock"
+
+        def chat(self, messages):
+            return ChatResponse(content="no json here")
+
+    stub = _stub_screen(client=GarbageLlm())
+    with pytest.raises(ValueError, match="slide JSON"):
+        ChatScreen._slides_script_json(stub, "retrieval", _results())
+
+
 # -- summary report (always prints; fails loudly on any gap) --------------------
 
 def test_studio_report(tmp_path):

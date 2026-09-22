@@ -86,3 +86,8 @@ Each entry: rationale, defaults, escape hatch, status.
 - **Rationale:** grounding rules alone reward minimal answers (Qwen returned bare one-liners); validator passes on ≥1 valid `[n]` so depth needs prompt pressure, not gate changes.
 - **Verified:** 48 grounding tests green; live probe (notebook-1/kimi, `qwen3.8-27b`): factoid 266 chars/2 sentences, explanatory 1581 chars structured, all cited; golden recall@12 = 1.00 unchanged.
 - **Status:** implemented.
+
+## E17. /video slide-script construction + live-run provider rule
+- **Rule:** `chat.py:_run_video` never passes a raw topic to `explain_video` (it only accepts slide JSON). With a provider: `_slides_script_json()` — LLM-grounded 3–5 slides (`title/bullets/narration` + `[n]` citations) over the same 8×800-char chunk context as text kinds, fence-tolerant parse, `ValueError` on garbage (honest `StudioFailed`, no silent template pass). Without a provider: `_fallback_slides_json()` builds ≤4 slides deterministically from chunk snippets. `save_video_artifact` error branch materializes `video-error.md` under the artifacts dir — a returned path must always exist.
+- **Provider rule:** live studio runs default to groq `qwen/qwen3.8-27b` (verified grounded 2026-09-22); google flash models were 503/404-unreliable that day. Escalation stays retry-once → change model (live `auth models` list) → change provider → stop-and-report; no-LLM templates never count as a live PASS.
+- **Status:** implemented (`tests/test_studio_modes.py` +4; live notebook-1 8/8 incl. 1.2 MB `slideshow.mp4`).

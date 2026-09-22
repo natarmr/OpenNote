@@ -74,17 +74,7 @@ curl.exe -fsSL https://ramratan.in/install | bash
 # or native PowerShell:
 iwr -useb https://ramratan.in/install.ps1 | iex
 ```
-
-**From source (dev):**
-
-```bash
-pip install -e ".[dev]"
-```
-
-*Note:* if you already have an `opennote` npm package installed globally, it shadows the CLI on PATH. Uninstall it (`npm uninstall -g opennote`) or use `py -m opennote.cli <cmd>` as an unambiguous fallback.
-
 ---
-
 ## 🧭 Usage
 
 ### Notebook management
@@ -141,22 +131,6 @@ opennote chat --provider local            # or: opennote ask "..." --provider lo
 ```
 
 Keys stored in the OS keychain when available, else read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, `CEREBRAS_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`. Validation requires network; `--no-verify` stores without checking.
-
-### Grounded Q&A
-
-```bash
-# Single‑turn: retrieve → ground → complete → validate citations
-opennote ask "What does the paper claim about retrieval?" --notebook <name> [--provider groq] [--top-k 5]
-
-# Agent chat: model decides when to search, may search several times, answers with citations
-opennote chat --notebook <name> [--new | --resume <id>] [--provider <id>]
-```
-
-### TUI (terminal UI)
-
-Run bare `opennote` to launch the terminal UI. Tab cycles `ask → search → studio`; `/studio` opens the generator submenu. Slash commands: `/mindmap /study /faq /briefing /timeline /suggest /audio /video /open /theme /help`.
-
----
 
 ## 🧩 Capabilities (runtime‑probed, advertised to the model)
 

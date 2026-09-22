@@ -1,56 +1,36 @@
 # OpenNote AGENTS Guide
 
-## Quickstart
+## Commands
 
-- Run all core tests: `pytest -q`
-- Bare `opennote` launches the TUI (no subcommand) and runs every CLI command (`opennote ask/search/ingest/...`)
+- Tests: `pytest -q` (full suite, ~3 min) · focused: `pytest tests/<file>.py -q`
+- CLI/TUI: bare `opennote` (TUI with no subcommand) and `opennote ask/search/ingest/...`
+- No `python` on PATH — only `py`. Fallback if console scripts missing: `py -m opennote ...` / `py -m pytest ...`
+- Lint: `py -m ruff check <touched-files>` — repo has pre-existing hits and no ruff config; match surrounding style, add zero *new* findings (diff against baseline)
+- No mypy installed — `py -m py_compile` touched files instead. Order: `py_compile` → `pytest`
+- No CI, no pre-commit, no `opencode.json`. `git status` before/after; commit only when asked
 
-## Environment / Launch
+## Architecture
 
-- Prefer the bare installed commands: `opennote`, `pytest` (both on PATH via `pip install -e ".[dev]"`)
-- Fallback when the console scripts are missing: `py -m opennote.cli ...` / `py -m pytest ...` (launcher is `py`, not `python`)
-- Tests may fail if `TAVILY_API_KEY` is absent (web search hidden); set it to enable Tavily
+- `opennote/cli.py:app` — Typer entry (`opennote = "opennote.cli:app"`); `opennote/__main__.py` makes `py -m opennote` work
+- `opennote/retrieval/retriever.py:Retriever` — hybrid BM25+vectors, adaptive `top_k` 5→8→12 (`engg_choices.md:E1/E2`); `--no-bm25` / `use_bm25=False` disables
+- `opennote/artifacts.py` — `save_artifact` → `<notebook>/artifacts/` (atomic, frontmatter `kind/title/created/prompt_version/sources`); mindmap extras `parse_mindmap`, `to_ascii_tree`, `short_artifact_display`
+- `opennote/audio/tts.py:explain_audio` — groq→openai→gemini→edge-tts, degrades to `.md`; `opennote/video.py:explain_video` — slides→TTS→ffmpeg, each stage degrades
+- `opennote/agents/loop.py:agent_turn` — multi-round tool loop; `agents/tools.py:execute_tool` + `get_tool_schemas(ctx)`; `ToolContext` decouples tools from Retriever
+- Skills (`opennote/skills/`, SKILL.md in `./skills/`, `./.agents/skills/`, `./.claude/skills/`, `./.opennote/skills/`, `~/.agents/skills/`, `~/.claude/skills/`, `~/.opennote/skills/`) are **model-invoked**; users trigger via TUI `/use <skill> [task]`, which arms one ask turn
+- Plugins: `.opennote/plugins/*.py` (+ `~/.opennote/`, entry-points); agents: `.opennote/agents/*.md` frontmatter (`mode: primary|subagent`)
+- TUI (`opennote/tui/`): Tab cycles `ask→search→studio`; palette in `tui/palette.py`; commands in `tui/commands.py` (see `COMMAND_REFERENCE.md`); chrome is **ASCII-only**; sidebar hides <112 cols; spend in `<notebook>/usage.json`
+- Runtime state (`.opennote/`, notebooks, keys) is gitignored — never commit it
 
-## Core Packages & Entry Points
+## Testing quirks
 
-- `opennote.retrieval.retriever.Retriever` — hybrid BM25+vectors by default (adaptive `top_k` 5→8→12 by corpus size; see `engg_choices.md:E1/E2`); pass `use_bm25=False` or `--no-bm25` to disable
-- `opennote.retrieval.bm25.Bm25Retriever` — keyword BM25 retrieval; `hybrid_search()` combines with vector scores
-- `opennote.artifacts` — studio generators: `create_mindmap`, `make_study_guide`, `make_faq`, `make_briefing`, `make_timeline`, `make_source_summaries`, `make_suggested_questions`; `save_artifact` persists to `notebook/artifacts/`
-- `opennote.audio.tts.explain_audio` — TTS adapter chain (groq→openai→gemini→edge-tts); degrades to `.md` transcript
-- `opennote.video.explain_video` — narrated slideshow: Stage 1 (.png+ .md always succeeds), Stage 2 (.mp3 per-slide TTS), Stage 3 (ffmpeg mux to .mp4)
-- `opennote.websearch` — Tavily web search + `read_page`; hidden when `TAVILY_API_KEY` absent
-- `opennote.skills` — SKILL.md discovery (shared dirs: `./skills/`, `./.agents/skills/`, `./.claude/skills/`, `./.opennote/skills/`, `~/.agents/skills/`, `~/.claude/skills/`, `~/.opennote/skills/`); `skill` + `run_skill_script` tools in agent loop
-- `opennote.plugins` — Python plugin loader (`.opennote/plugins/*.py`, `~/.opennote/plugins/*.py`, `[project.entry-points."opennote.plugins"]`); built-in `supermemory` plugin gated on `SUPERMEMORY_API_KEY`
-- `opennote.agents.defs` — agent definitions (markdown frontmatter in `.opennote/agents/*.md`, `~/.opennote/agents/*.md`); `task` tool for subagents (explore/general)
-- `opennote.agents.tools.ToolContext` — decouples tools from bare Retriever; `execute_tool(name, ctx, kwargs)` with `get_tool_schemas(ctx)`
-- `opennote.cli` — CLI entrypoint; `opennote search` is the retrieval half of RAG; `opennote skills|plugins|agents|capabilities` introspection
+- `TAVILY_API_KEY` absent → web-search tests hide/fail; set it for full signal
+- Root fixtures must stay: `kimi.pdf` (`test_e2e_grounded.py` asserts it exists), `injection-test-set.txt` (read by **absolute** `D:/Code/OpenNote/...` path in `test_injection_gate.py` — breaks if moved)
+- E2E loads embedding weights (~90s first call, module-cached); `opennote artifacts check -n <nb>` is the fast live studio self-check (fallback path, no LLM cost)
+- `test_schemas_have_both_tools` pins core tools `{"search", "list_sources", "web_search", "read_page", "submit_grounded_answer"}`; dynamic tools come via `get_tool_schemas`
+- Headless TUI tests use `app.run_test()` pilot; unmounted widgets raise `NoScreen` on `screen` access (`Transcript._reveal` is hardened for this)
 
-## TUI (Textual UI)
+## Conventions
 
-- Modes cycle: `ask → search → studio` (Tab cycles); `/studio` slash command enters studio mode
-- Studio mode presents a submenu of artifact generators (mind-map, study guide, FAQ, briefing, timeline, suggested questions)
-- Slash commands: `/studio`, `/mindmap`, `/study`, `/faq`, `/briefing`, `/timeline`, `/suggest`, `/audio`, `/video`, `/open`, `/skills`, `/skill`, `/plugins`, `/agents`, `/agent`, `/capabilities`, `/context`, `/snake` (waiting-room game, allowed while busy; completions toast over the modal)
-- Context meter (`opennote/context_meter.py`, `engg_choices.md:E12`): provider-reported tokens when available (`~` estimate otherwise); 32-col right `SideBar` (session/context/services/footer, hidden <112 cols) + persistent `ctx` readout in prompt bar + `/context` panel; spend in `<notebook>/usage.json`; TUI chrome is ASCII-only
-- Transcript shows results; graceful degradation when backends unavailable
-- Run TUI tests: `pytest tests/test_tui_app.py` (may have import errors if Textual not fully set up)
-
-## Tests
-
-- Run the full suite: `pytest -q` — **410/410 pass** (includes `tests/test_e2e_grounded.py`); `pytest tests/data/kimi.tsv` golden: `opennote golden tests/data/kimi.tsv`
-- Run TUI tests only: `pytest tests/test_tui_app.py`
-- `test_schemas_have_both_tools` expects `{"search", "list_sources", "web_search", "read_page", "submit_grounded_answer"}` (core only; dynamic tools via `get_tool_schemas`)
-
-## Known Issues / Blockers
-
-- Groq TTS requires orpheus terms acceptance; other backends built-to-spec + mock-tested
-- No `python` on PATH — always use `py -m ...` as fallback when bare `opennote`/`pytest` are missing
-
-## Workflow Order
-
-1. `lint` → `typecheck` → `test`
-2. If adding retrieval features: hybrid is default-on; use `--no-bm25` / `use_bm25=False` to disable and tune `bm25_alpha`; `top_k` is adaptive (5→8→12), see `engg_choices.md`
-3. If adding TTS/video: ensure Groq key or fallback transcript will be used
-4. If adding web search: configure correct `TAVILY_API_KEY`
-5. If adding skills: `npx skills add <owner/repo> -a codex` (→ `.agents/skills/` — shared dir scanned by opennote)
-6. If adding plugins: place `.py` in `.opennote/plugins/` and set `SUPERMEMORY_API_KEY` for supermemory
-7. If adding agents: create markdown in `.opennote/agents/*.md` with frontmatter (`mode: primary|subagent`)
+- Match file-local style (`Optional[]`/`List[]`, `except Exception` in TUI) over ruff ideals
+- User docs live in `docs/0-START-HERE|1-INSTALLATION|2-CORE-CONCEPTS|3-USER-GUIDE/index.md`, linked from README header — keep them short and command-accurate
+- Record fixes in `ledger.md` (`| L<n> | SEV | location | ... |`) and design calls in `engg_choices.md` (`## E<n>`); next IDs continue the sequence

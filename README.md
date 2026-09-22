@@ -108,12 +108,6 @@ opennote ingest [path-or-url] --notebook <name> [--parser auto|docling|fallback]
 opennote search "<query>" --notebook <name> --top-k 3 [--source file.pdf]
 ```
 
-### Golden-set evaluation
-
-```bash
-opennote golden golden.tsv --notebook <name> --top-k 5
-```
-
 ### BYOK keys
 
 ```bash

@@ -800,8 +800,9 @@ class ChatScreen(Screen):
         except Exception:
             detail = msg.detail
         self.transcript.add_info(f"Studio {msg.label}: {detail}")
-        # Inline mind-map preview right in the transcript.
-        if msg.label == "mindmap":
+        # Native in-terminal rendering: mind-maps as a tree, every other
+        # markdown artifact as Markdown. Audio/video stay path-only.
+        if msg.label not in ("audio", "video"):
             try:
                 from pathlib import Path as _Path
 
@@ -809,10 +810,16 @@ class ChatScreen(Screen):
                 from opennote.artifacts import parse_mindmap as _parse
 
                 p = _Path(str(msg.detail))
-                if p.is_file():
+                if p.is_file() and p.suffix == ".md":
                     art = _load(p)
-                    self.transcript.add_mindmap(art.title, _parse(art.body, title=art.title))
-                    self.transcript.add_info("Tip: /open <file> reopens this map in a collapsible viewer.")
+                    if msg.label == "mindmap" or art.kind == "mindmap":
+                        self.transcript.add_mindmap(art.title, _parse(art.body, title=art.title))
+                        self.transcript.add_info("Tip: /open <file> reopens this map in a collapsible viewer.")
+                    else:
+                        body = art.body
+                        if len(body) > 4000:
+                            body = body[:4000].rstrip() + "\n\n…(truncated — /open <file> for the full text)"
+                        self.transcript.add_answer(body)
             except Exception:
                 pass
         self.prompt.set_idle()

@@ -743,21 +743,100 @@ def capabilities_cmd():
     typer.echo(f"agents_available: {getattr(caps, 'agents_available', [])}")
 
 
+def _artifacts_check(nb, topic: str) -> None:
+    """Self-check every studio mode against *nb*: generate (fallback path),
+    render natively, and print a PASS/FAIL/SKIP table with output previews.
+
+    Text artifacts are saved titled "Self-check <kind>" (delete them after
+    if you don't want to keep them). Audio/video backends are never invoked;
+    only their capability flags are reported (binary = path-only by design).
+    Exit code is 1 on any FAIL, 0 otherwise.
+    """
+    from opennote.artifacts import (
+        create_mindmap,
+        load_artifact,
+        make_briefing,
+        make_faq,
+        make_study_guide,
+        make_suggested_questions,
+        make_timeline,
+        parse_mindmap,
+        short_artifact_display,
+        to_ascii_tree,
+    )
+
+    try:
+        retriever = Retriever(nb, top_k=8)
+        results = retriever.search(topic)
+    except ValueError:
+        typer.echo("SKIP: no sources indexed yet. Run 'opennote ingest <path>' first.", err=True)
+        raise typer.Exit(1)
+    context_parts = []
+    for i, r in enumerate(results, start=1):
+        fn = r.metadata.get("filename", "unknown")
+        chunk = r.content[:800].replace("\n", " ")
+        context_parts.append(f"[{i}] {fn}: {chunk}")
+    context = "\n".join(context_parts) if context_parts else "No context available."
+    items = [f"{r.metadata.get('filename', 'unknown')}: {r.content[:60]}" for r in results[:8]]
+
+    jobs = [
+        ("mindmap", lambda: create_mindmap(topic, items, nb.directory)),
+        ("study", lambda: make_study_guide(topic, context, nb.directory, title=f"Self-check {topic}")),
+        ("faq", lambda: make_faq(context, nb.directory, title=f"Self-check {topic}")),
+        ("briefing", lambda: make_briefing(topic, context, nb.directory, title=f"Self-check {topic}")),
+        ("timeline", lambda: make_timeline(topic, context, nb.directory, title=f"Self-check {topic}")),
+        ("suggest", lambda: make_suggested_questions(topic, context, nb.directory, title=f"Self-check {topic}")),
+    ]
+    failed = False
+    typer.echo(f" kind      status  detail")
+    for kind, run in jobs:
+        try:
+            art = run()
+            body = load_artifact(art.path).body
+            if not body.strip():
+                raise ValueError("empty body generated")
+            if kind == "mindmap":
+                rendered = to_ascii_tree(parse_mindmap(body, title=art.title))
+            else:
+                rendered = body
+            preview = rendered[:300].replace("\n", " ")
+            typer.echo(f" {kind:<9} PASS    {len(body)} chars | {short_artifact_display(art.path, nb.directory)}")
+            typer.echo(f"           preview: {preview}")
+        except Exception as e:  # noqa: BLE001 - self-check must show failures, not crash
+            failed = True
+            typer.echo(f" {kind:<9} FAIL    {type(e).__name__}: {e}", err=True)
+    from opennote.capabilities import get_capabilities
+
+    caps = get_capabilities()
+    typer.echo(f" audio     N/A     binary path-only by design (tts_backend={caps.tts_backend}, available={caps.tts_available})")
+    typer.echo(f" video     N/A     binary path-only by design (available={caps.video_available})")
+    if failed:
+        raise typer.Exit(1)
+    typer.echo("Self-check artifacts saved (title 'Self-check ...') — delete them if unwanted.")
+
+
 @app.command("artifacts")
 def artifacts_cmd(
-    action: str = typer.Argument("export", help="Action: export | show"),
+    action: str = typer.Argument("export", help="Action: export | show | check"),
     name: Optional[str] = typer.Argument(None, help="Artifact filename (or substring) for 'show'."),
     notebook: Optional[str] = typer.Option(None, "--notebook", "-n", help="Notebook (default: most recent in this dir)."),
     format: str = typer.Option("json", "--format", "-f", help="Export format: json."),
     tree: bool = typer.Option(False, "--tree", help="Render mind-maps as an ASCII tree (show only)."),
+    topic: str = typer.Option("self-check", "--topic", "-t", help="Topic for 'check' generation."),
 ):
-    """Export studio artifacts as JSON, or show one in the terminal."""
+    """Export studio artifacts as JSON, show one, or self-check all studio modes."""
     import json as _json
 
     nb = _notebook(notebook)
     from opennote.artifacts import (
+        create_mindmap,
         export_artifact_json,
         load_artifact,
+        make_briefing,
+        make_faq,
+        make_study_guide,
+        make_suggested_questions,
+        make_timeline,
         parse_mindmap,
         short_artifact_display,
         to_ascii_tree,
@@ -765,6 +844,9 @@ def artifacts_cmd(
 
     ad = nb.directory / "artifacts"
     files = sorted(ad.glob("*.md")) if ad.is_dir() else []
+    if action == "check":
+        _artifacts_check(nb, topic)
+        return
     if action == "show":
         target = None
         if name:
@@ -783,7 +865,7 @@ def artifacts_cmd(
             typer.echo(art.body)
         return
     if action != "export":
-        typer.echo(f"Unknown action '{action}'. Use: export | show", err=True)
+        typer.echo(f"Unknown action '{action}'. Use: export | show | check", err=True)
         raise typer.Exit(1)
     items = []
     for f in files:

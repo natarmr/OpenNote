@@ -60,6 +60,19 @@ In a world dominated by Artificial Intelligence, having the ability to think and
 | **Textual TUI** | Tab cycles `ask → search → studio`; `/studio` submenu; slash commands `/mindmap /study /faq /briefing /timeline /suggest /audio /video /open /theme /help` |
 
 ---
+## 🆚 Open Notebook vs Google Notebook LM
+
+| Feature | Open Notebook | Google Notebook LM | Advantage |
+|---------|---------------|--------------------|-----------|
+| **Privacy & Control** | Self-hosted, your data | Google cloud only | Complete data sovereignty |
+| **AI Provider Choice** | 5+ providers (OpenAI, Anthropic, Groq, Cerebras.) | Google models only | Flexibility and cost optimization |
+| **Content Transformations** | Custom and built-in | Limited options | Unlimited processing power |
+| **Deployment** | Your own terminal | Google hosted only | Deploy anywhere |
+| **Citations** | Basic references (will improve) | Comprehensive with sources | Research integrity |
+| **Customization** | Open source, fully customizable | Closed system | Unlimited extensibility |
+| **Cost** | Pay only for AI usage | Free tier + Monthly subscription | Transparent and controllable |
+
+---
 
 ## 🛠 Installation
 

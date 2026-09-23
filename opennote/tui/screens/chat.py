@@ -139,6 +139,9 @@ class ChatScreen(Screen):
         self._banner_live = False
         # Skill armed via /use: injected into the next ask turn, then cleared.
         self._pending_skill: Optional[str] = None
+        # How many transcript messages have been rendered into the widget
+        # (prevents resize-driven re-render from appending Q+A twice).
+        self._history_rendered: int = 0
 
     # -- composition -------------------------------------------------------
 
@@ -166,15 +169,19 @@ class ChatScreen(Screen):
         self._fit_sidebar()
 
     def on_resize(self, event) -> None:
-        self._fit_sidebar()
+        self._fit_sidebar_display()
 
-    def _fit_sidebar(self) -> None:
-        """Hide the sidebar on narrow terminals; show it when room allows."""
+    def _fit_sidebar_display(self) -> None:
+        """Resize-only: toggle sidebar visibility without touching notebook/provider."""
         try:
             width = self.app.size.width if self.app else 200
             self.query_one("#sidebar", SideBar).display = width >= self.SIDEBAR_MIN_WIDTH
         except Exception:
             pass
+
+    def _fit_sidebar(self) -> None:
+        """Mount-only: hide/show sidebar + wire provider, notebook and commands."""
+        self._fit_sidebar_display()
         self.transcript.palette = self.palette
         self.commands = make_commands(self)
         self.prompt.set_commands(self.commands)
@@ -399,11 +406,18 @@ class ChatScreen(Screen):
 
     # -- history rendering -------------------------------------------------
 
+    def _reset_history_rendered(self) -> None:
+        self._history_rendered = 0
+
     def _render_history(self, messages: Optional[List[Dict]] = None) -> None:
         if self.notebook is None:
             return
         msgs = messages if messages is not None else load_transcript(self.notebook)
-        for msg in msgs:
+        # Delta-guard: a resize re-enters via _fit_sidebar → _finish_mount;
+        # without this the same Q+A gets appended a second time.
+        start = self._history_rendered
+        pending = msgs[start:]
+        for msg in pending:
             role = msg.get("role")
             content = msg.get("content")
             if not isinstance(content, str):
@@ -412,6 +426,8 @@ class ChatScreen(Screen):
                 self.transcript.add_user(content)
             elif role == "assistant":
                 self.transcript.add_answer(content)
+        if pending or messages is None:
+            self._history_rendered = len(msgs)
 
     # -- prompt wiring -----------------------------------------------------
 
@@ -452,6 +468,10 @@ class ChatScreen(Screen):
         if self.notebook is None:
             self.transcript.add_error("Notebook is not available.")
             return
+        self.transcript.add_user(question)
+        # Optimistically advance so a resize before storage does not re-append
+        # the echoed question (storage will catch up on TurnResult).
+        self._history_rendered += 1
         # Pop a skill armed via /use (kept armed when the turn can't start).
         skill_block, skill_name = self._pop_pending_skill()
         self._cancel_flag = False
@@ -525,6 +545,7 @@ class ChatScreen(Screen):
         if self.notebook is None:
             self.transcript.add_error("Notebook is not available.")
             return
+        self.transcript.add_user(question)
         self._cancel_flag = False
         self.prompt.set_busy("Retrieving...")
         self._run_search(question)
@@ -821,6 +842,12 @@ class ChatScreen(Screen):
         if skill:
             self.transcript.add_info(f"Skill applied: {skill}")
         self.transcript.add_answer(msg.answer)
+        # Sync the render cursor to storage so a remount does not re-append
+        # the echo + this answer (both now sit in transcript.json).
+        try:
+            self._history_rendered = len(load_transcript(self.notebook)) if self.notebook else self._history_rendered + 1
+        except Exception:
+            self._history_rendered += 1
         usage = getattr(msg, "usage", None)
         # Persistent opencode-style readout in the prompt bar (survives scroll).
         try:
@@ -956,6 +983,7 @@ class ChatScreen(Screen):
         if self.notebook is not None:
             clear_transcript(self.notebook)
         self.transcript.clear()
+        self._reset_history_rendered()
         self._banner_live = False
         self._show_banner()
 
@@ -1049,6 +1077,7 @@ class ChatScreen(Screen):
         save_transcript(self.notebook, messages[:last_user])
         self._pending_skill = None
         self.transcript.clear()
+        self._reset_history_rendered()
         self._banner_live = False
         self._show_banner()
         self._render_history()
@@ -1456,6 +1485,7 @@ class ChatScreen(Screen):
         self.notebook_name = notebook.name
         self.notebook = notebook
         self.transcript.clear()
+        self._reset_history_rendered()
         self._banner_live = False
         self._show_banner()
         msgs = load_transcript(notebook)
@@ -1482,6 +1512,7 @@ class ChatScreen(Screen):
         self.notebook_name = notebook.name
         self.notebook = notebook
         self.transcript.clear()
+        self._reset_history_rendered()
         self._banner_live = False
         self._show_banner()
         self._sync_meta()
@@ -1532,6 +1563,7 @@ class ChatScreen(Screen):
                     else:
                         self.notebook = None
                         self.transcript.clear()
+                        self._reset_history_rendered()
                         self._banner_live = False
                         self._show_banner()
             except Exception as e:

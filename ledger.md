@@ -161,10 +161,11 @@ studio audio/video path.
 | L97 | MED | `chat.py:_on_studio_picked` (L370) + `opennote/audio/tts.py`, `opennote/video.py` | Studio menu "Narrated audio"/"Narrated video" routed through `_generate_studio_artifact` → `_render` raises `ValueError: Unsupported kind: audio` | **fixed** | Special-case `audio`→ `_run_audio`/`save_audio_artifact` and `video`→ `_run_video`/`save_video_artifact` (worker threads); make `artifacts_dir` Optional with fallback to `NotebookManager` so `test_save_*_artifact_rejects_traversal` keeps working | `tests/test_artifacts_tts_video.py` (20 passed) |
 | L98 | HIGH | `chat.py` (L151) + `opennote/tui/commands.py:77` | Stale `_open_palette`/`_on_palette_done`/`_show_help` block deleted decisively left no `_open_palette` → `make_commands` raises `AttributeError: 'ChatScreen' object has no attribute '_open_palette'` on every mount (31 TUI tests failed) | **fixed** | Restore `_open_palette` as wrapper for `action_open_palette` + `_on_palette_done` stub; real `_show_help` at L633 kept, duplicate at L157 removed | `tests/test_tui_app.py`, `tests/test_tui_commands.py` (44 passed) |
 | L99 | LOW | repo hygiene | Junk debug scripts `fix_chat.py`, `fix_render.py`, `fix_render2.py`, `update_test.py` left in repo root; `notebooks/` + `artifacts/` runtime dirs not gitignored | **fixed** | Delete scripts; add `notebooks/` + `artifacts/` to `.gitignore` | — |
+| L100 | HIGH | `tui/screens/chat.py:168-211` + `tui/widgets/transcript.py` | Mount/resize path re-rendered entire `transcript.json` on every `on_resize`/`_finish_mount` → `nb2` showed the same answer 2×+ stacked vertically | **fixed** | `_history_rendered` delta guard (0→len on first render, slice on re-render), split `_fit_sidebar` (mount-only) vs `_fit_sidebar_display` (resize-only), `transcript.clear()` paths call `_reset_history_rendered()`, live echo in `_start_ask`/`_start_search` with optimistic cursor bump and `on_turn_result` sync | `tests/test_tui_history_render.py` (6) — resize/double-mount/echo/switch/clear-undo dedup |
 
 ## Test status
 
-Full suite: **336 passed** (was 334 before the Wave 6 palette/connect rework).
+Full suite: **461 passed** (was 455 before this fix).
 The additions are the regression guards listed above plus the Wave 1-5 fixes
 (loop/tools/websearch citations, BM25/hybrid, TTS/video/artifacts, TUI studio)
 and the L36/L21 closures below. Every entry above has a dedicated regression

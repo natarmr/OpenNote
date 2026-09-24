@@ -235,7 +235,10 @@ def ingest(
     except ValueError as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
-    typer.echo(f"Indexed {count} chunk(s).")
+    if count == 0:
+        typer.echo("Indexed 0 chunk(s) (nothing new or no supported content).")
+    else:
+        typer.echo(f"Indexed {count} chunk(s).")
 
 
 @app.command("search")

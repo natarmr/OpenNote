@@ -53,7 +53,6 @@ def _single_shot(
         valid_tokens=valid_tokens or None,
     )
     system_post = render_system_post()
-    tagged = build_tagged_context(results)
     system = f"{system_pre}\n\nSources:\n{tagged}\n\n{system_post}" if tagged else f"{system_pre}\n\n{system_post}"
     user_message = build_tagged_user_message(question, tagged)
     messages = [{"role": "user", "content": user_message}]

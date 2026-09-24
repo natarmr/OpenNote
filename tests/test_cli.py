@@ -134,6 +134,14 @@ def test_remove_source_cmd(cli_mod):
     assert "/tmp/a.txt" not in reloaded.sources
 
 
+def test_ingest_zero_reports_nothing_new(cli_mod, monkeypatch):
+    cli_mod.get_manager().create("default")
+    monkeypatch.setattr(cli_mod, "run_ingest", lambda *a, **kw: 0)
+    result = runner.invoke(cli_mod.app, ["ingest", "f.txt", "-n", "default"])
+    assert result.exit_code == 0
+    assert "nothing new" in result.output
+
+
 def test_bare_opennote_entry_point_registered():
     """The bare `opennote` console script must map to opennote.cli:app."""
     import pytest

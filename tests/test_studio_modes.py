@@ -138,12 +138,27 @@ def test_generate_llm_path(tmp_path, kind):
     _preview(kind, art.body)
 
 
-def test_generate_empty_notebook_reports_error(tmp_path):
+def test_generate_empty_notebook_returns_blank(tmp_path):
     nb = _manager(tmp_path).get("t")
     stub = _stub_screen(retriever=EmptyRetriever())
     path = ChatScreen._generate_studio_artifact(stub, "study", "retrieval", nb)
     assert path == ""
-    assert any("No sources" in e for e in stub.transcript.errors)
+    # No transcript touch from the worker thread; _run_studio reports the failure.
+    assert stub.transcript.errors == []
+
+
+def test_generate_llm_exception_propagates(tmp_path):
+    class BoomLlm(FakeLlm):
+        def chat(self, messages):
+            raise RuntimeError("provider down")
+
+    nb = _manager(tmp_path).get("t")
+    stub = _stub_screen(retriever=FakeRetriever(_results()), client=BoomLlm("study"))
+    with pytest.raises(RuntimeError, match="provider down"):
+        ChatScreen._generate_studio_artifact(stub, "study", "retrieval", nb)
+    # And crucially: no "LLM error" body was persisted as an artifact.
+    files = list(nb.directory.glob("artifacts/*.md"))
+    assert files == []
 
 
 # -- layer 2: native terminal display (headless pilot) --------------------------
@@ -192,6 +207,32 @@ async def test_audio_video_stay_path_only(tmp_path, kind):
         text = _transcript_text(app.screen.transcript)
         assert f"Studio {kind}:" in text
         assert "binary" not in text
+        assert "unavailable" not in text  # real binary: no degradation note
+
+
+@pytest.mark.parametrize("kind", AV_KINDS)
+async def test_degraded_av_labeled_not_silent(tmp_path, kind):
+    app = OpenNoteApp(notebook_name="t", palette=DARK, manager=_manager(tmp_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        stub_md = tmp_path / "fallback.md"
+        stub_md.write_text("# transcript", encoding="utf-8")
+        app.screen.on_studio_result_msg(StudioResultMsg(kind, str(stub_md)))
+        await pilot.pause()
+        text = _transcript_text(app.screen.transcript)
+        assert f"Studio {kind}:" in text
+        assert "unavailable" in text
+
+
+async def test_run_studio_empty_index_posts_failure(tmp_path, monkeypatch):
+    app = OpenNoteApp(notebook_name="t", palette=DARK, manager=_manager(tmp_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app.screen, "_generate_studio_artifact", lambda *a: "")
+        bar = app.screen.query_one("#prompt-bar", PromptBar)
+        app.screen._run_studio("study", "topic")
+        await _wait_idle(pilot, bar)
+        assert "No sources" in _transcript_text(app.screen.transcript)
 
 
 # -- layer 3: CLI round-trip ----------------------------------------------------

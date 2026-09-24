@@ -664,6 +664,12 @@ class ChatScreen(Screen):
             logger.exception("Studio generation failed")
             self.app.call_from_thread(self.post_message, StudioFailed(str(e)))
             return
+        if not detail:
+            # Empty index: _generate_studio_artifact reports nothing to save.
+            self.app.call_from_thread(
+                self.post_message, StudioFailed("No sources indexed yet. Run /ingest first.")
+            )
+            return
         self.app.call_from_thread(
             self.post_message, StudioResultMsg(kind, detail)
         )
@@ -781,7 +787,6 @@ class ChatScreen(Screen):
             retriever = self._retriever or Retriever(notebook, top_k=8)
             results = retriever.search(topic)
         except ValueError:
-            self.transcript.add_error("No sources indexed yet. Run /ingest first.")
             return ""
 
         context_parts: List[str] = []
@@ -811,10 +816,9 @@ class ChatScreen(Screen):
             raise ValueError(f"Unsupported kind: {kind}")
 
         if self._client is not None:
-            try:
-                answer: str = self._client.chat([{"role": "user", "content": prompt}]).content
-            except Exception as e:
-                answer = f"LLM error: {e}"
+            # Exceptions propagate to _run_studio → StudioFailed. Never persist
+            # an "LLM error: ..." string as a real artifact body.
+            answer: str = self._client.chat([{"role": "user", "content": prompt}]).content
             art = save_artifact(kind=kind, title=topic, body=answer, notebook_dir=notebook.directory)
             return str(art.path)
 
@@ -897,27 +901,40 @@ class ChatScreen(Screen):
             detail = msg.detail
         self.transcript.add_info(f"Studio {msg.label}: {detail}")
         # Native in-terminal rendering: mind-maps as a tree, every other
-        # markdown artifact as Markdown. Audio/video stay path-only.
-        if msg.label not in ("audio", "video"):
+        # markdown artifact as Markdown. Audio/video stay path-only — and a
+        # non-binary path means graceful degradation, not a full success.
+        if msg.label in ("audio", "video"):
             try:
                 from pathlib import Path as _Path
 
-                from opennote.artifacts import load_artifact as _load
-                from opennote.artifacts import parse_mindmap as _parse
-
-                p = _Path(str(msg.detail))
-                if p.is_file() and p.suffix == ".md":
-                    art = _load(p)
-                    if msg.label == "mindmap" or art.kind == "mindmap":
-                        self.transcript.add_mindmap(art.title, _parse(art.body, title=art.title))
-                        self.transcript.add_info("Tip: /open <file> reopens this map in a collapsible viewer.")
-                    else:
-                        body = art.body
-                        if len(body) > 4000:
-                            body = body[:4000].rstrip() + "\n\n…(truncated — /open <file> for the full text)"
-                        self.transcript.add_answer(body)
+                suffix = _Path(str(msg.detail)).suffix.lower()
+                if suffix not in (".mp3", ".wav", ".mp4"):
+                    self.transcript.add_info(
+                        f"Note: full {msg.label} unavailable — showing transcript/script instead."
+                    )
             except Exception:
                 pass
+            self.prompt.set_idle()
+            return
+        try:
+            from pathlib import Path as _Path
+
+            from opennote.artifacts import load_artifact as _load
+            from opennote.artifacts import parse_mindmap as _parse
+
+            p = _Path(str(msg.detail))
+            if p.is_file() and p.suffix == ".md":
+                art = _load(p)
+                if msg.label == "mindmap" or art.kind == "mindmap":
+                    self.transcript.add_mindmap(art.title, _parse(art.body, title=art.title))
+                    self.transcript.add_info("Tip: /open <file> reopens this map in a collapsible viewer.")
+                else:
+                    body = art.body
+                    if len(body) > 4000:
+                        body = body[:4000].rstrip() + "\n\n…(truncated — /open <file> for the full text)"
+                    self.transcript.add_answer(body)
+        except Exception:
+            pass
         self.prompt.set_idle()
 
     def on_studio_failed(self, msg: StudioFailed) -> None:

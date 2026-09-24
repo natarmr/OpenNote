@@ -76,3 +76,15 @@ def test_ask_preserves_answer_without_markers():
     out = ask(StubNotebook(), "q", client=client, retriever=FakeRetriever(results))
     assert out.answer == "sources don't contain this"
     assert out.sources == []
+
+
+def test_single_shot_honors_context_budget():
+    big = "x" * 20000
+    results = [_result("a.pdf", big), _result("b.pdf", big)]
+    client = FakeClient("ok [1]")
+    ask(StubNotebook(), "q", client=client, retriever=FakeRetriever(results), context_budget=1000)
+    system = client.calls[0][0]
+    # Fitted context: truncation notice present, full blobs not sent.
+    assert "[truncated:" in system
+    assert big not in system
+    assert len(system) < 4000  # ~1k budget + system template, not 40k unbounded

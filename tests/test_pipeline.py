@@ -53,7 +53,8 @@ def test_source_not_marked_indexed_when_embedding_fails(
         raise RuntimeError("embedding failed")
 
     monkeypatch.setattr(VectorStoreManager, "add_chunks", boom)
-    ingest(nb, pdf, parser="fallback")
+    with pytest.raises(ValueError, match="No chunks indexed"):
+        ingest(nb, pdf, parser="fallback")
 
     mgr = VectorStoreManager("documents", nb.store_dir)
     assert mgr.manifest.data == {}, "source must not be marked indexed on failure"
@@ -139,3 +140,62 @@ def test_mixed_case_extensions_scanned(stub_embedder, notebook_manager, tmp_path
 
     files = find_source_files(tmp_path)
     assert {f.name for f in files} == {"Notes.PDF", "read.TXT"}
+
+
+def test_all_files_fail_raises_not_silent_zero(stub_embedder, notebook_manager, tmp_path, monkeypatch):
+    import opennote.ingest.pipeline as pipeline
+
+    class BoomParser:
+        def parse(self, path, spec):
+            raise RuntimeError("parser down")
+
+    monkeypatch.setattr(pipeline, "get_parser_for_file", lambda *a, **kw: BoomParser())
+    f = tmp_path / "bad.txt"
+    f.write_text("content", encoding="utf-8")
+    nb = notebook_manager.create("nb")
+    with pytest.raises(ValueError, match="No chunks indexed"):
+        ingest(nb, f)
+
+
+def test_ingest_url_failure_raises(stub_embedder, notebook_manager, tmp_path, monkeypatch):
+    import opennote.ingest.pipeline as pipeline
+
+    def boom_url(url, spec):
+        raise RuntimeError("net down")
+
+    monkeypatch.setattr(pipeline, "parse_url", boom_url)
+    nb = notebook_manager.create("nb")
+    with pytest.raises(ValueError, match="Failed to ingest URL"):
+        ingest(nb, "https://example.com/page")
+
+
+def test_remove_source_propagates_backend_failure(stub_embedder, notebook_manager, tmp_path, monkeypatch):
+    import opennote.ingest.pipeline as pipeline
+    from opennote.ingest.pipeline import remove_source
+
+    nb = notebook_manager.create("nb")
+    nb.sources.append("/tmp/a.txt")
+    nb.save()
+
+    class BoomVM:
+        def __init__(self, *a, **kw):
+            raise RuntimeError("store down")
+
+    monkeypatch.setattr(pipeline, "VectorStoreManager", BoomVM)
+    with pytest.raises(RuntimeError, match="store down"):
+        remove_source(nb, "/tmp/a.txt")
+    assert "/tmp/a.txt" in nb.sources, "sources list must be untouched on backend failure"
+
+
+def test_remove_source_clears_vectors_and_list(stub_embedder, notebook_manager, tmp_path):
+    from opennote.ingest.pipeline import ingest, remove_source
+
+    f = tmp_path / "doc.txt"
+    f.write_text("removable content marker", encoding="utf-8")
+    nb = notebook_manager.create("nb")
+    assert ingest(nb, f) > 0
+    assert len(nb.sources) == 1
+    remove_source(nb, nb.sources[0])
+    assert nb.sources == []
+    mgr = VectorStoreManager("documents", nb.store_dir)
+    assert mgr.collection.get()["ids"] == []

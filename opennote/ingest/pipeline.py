@@ -187,7 +187,7 @@ def ingest(
             raise
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to ingest URL '{target}': {e}", exc_info=True)
-            return 0
+            raise ValueError(f"Failed to ingest URL '{target}': {e}") from e
 
     files = find_source_files(Path(target))
     if not files:
@@ -221,6 +221,7 @@ def ingest(
         )
 
     total_indexed = 0
+    failed_files: List[str] = []
     for f, f_hash in files_to_process:
         source = str(f.resolve())
         try:
@@ -263,7 +264,16 @@ def ingest(
             vector_mgr.manifest.mark_indexed(source, f_hash)
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to parse '{f.name}': {e}", exc_info=True)
+            failed_files.append(f.name)
 
+    if failed_files and total_indexed == 0:
+        # Files existed but every one failed: callers must not report success.
+        # (Legitimate zero-yield files — e.g. emptied sources — and the
+        # all-up-to-date path return 0 without any failure recorded.)
+        raise ValueError(
+            f"No chunks indexed; {len(failed_files)} file(s) failed"
+            f" ({', '.join(failed_files)}). See log for details."
+        )
     return total_indexed
 
 
@@ -281,23 +291,19 @@ def _record_source(notebook: Notebook, source: str):
 
 
 def remove_source(notebook: Notebook, source: str) -> None:
-    """Remove *source* from notebook: vector store, manifest, and sources list."""
-    from opennote.store.vectors import VectorStoreManager
+    """Remove *source* from notebook: vector store, manifest, and sources list.
 
-    # Remove from vector store
-    try:
-        vm = VectorStoreManager(
-            collection_name="documents",
-            store_dir=notebook.store_dir,
-            model_name=notebook.embed_model,
-        )
-        vm.delete_source(source)
-        try:
-            vm.manifest.remove(source)
-        except Exception:
-            pass
-    except Exception:
-        pass
+    Backend failures propagate — the sources list is only updated when the
+    vector store and manifest removals succeed, so chunks can never stay
+    searchable after a reported "Removed".
+    """
+    vm = VectorStoreManager(
+        collection_name="documents",
+        store_dir=notebook.store_dir,
+        model_name=notebook.embed_model,
+    )
+    vm.delete_source(source)
+    vm.manifest.remove(source)
     if source in notebook.sources:
         notebook.sources.remove(source)
         notebook.save()

@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# OpenNote Installer - ramratan.in
+# OpenNote Installer — fetches OpenNote from GitHub (no PyPI, no extra hosting).
 # Usage:
 #   macOS / Linux / Git Bash / WSL:
-#     curl -fsSL https://ramratan.in/install | bash
+#     curl -fsSL https://raw.githubusercontent.com/natarmr/OpenNote/main/install | bash
 #   Windows PowerShell 5.1 (curl is an alias for Invoke-WebRequest):
-#     curl.exe -fsSL https://ramratan.in/install | bash
+#     curl.exe -fsSL https://raw.githubusercontent.com/natarmr/OpenNote/main/install | bash
 #     # or native PowerShell:
-#     iwr -useb https://ramratan.in/install.ps1 | iex
+#     iwr -useb https://raw.githubusercontent.com/natarmr/OpenNote/main/install.ps1 | iex
 # Docs: https://github.com/natarmr/OpenNote#installation
+#
+# NOTE: never `pip install opennote` — that PyPI name belongs to an unrelated
+# video-API SDK. OpenNote installs only from the GitHub tarball below.
 
 set -euo pipefail
+
+TARBALL_URL="https://github.com/natarmr/OpenNote/archive/refs/heads/main.tar.gz"
 
 # 1. Resolve Python (cross-platform: python3 / python / py launcher on Windows)
 PYTHON_BIN=""
@@ -30,18 +35,9 @@ if ! "$PYTHON_BIN" -c "import sys; raise SystemExit(0 if sys.version_info >= (3,
     exit 1
 fi
 
-# 2. Install OpenNote
-#    Prefer PyPI when available; fallback to GitHub tarball (no hosting burden on ramratan.in).
-#    Uses PEP 508 direct reference (no deprecated #egg fragment).
+# 2. Install OpenNote from the GitHub tarball (PEP 508 direct reference).
 echo "Installing OpenNote..."
-
-PIP_CMD=("$PYTHON_BIN" -m pip)
-if "${PIP_CMD[@]}" install --quiet "opennote" 2>/dev/null; then
-    echo "Installed from PyPI."
-else
-    echo "PyPI not available, installing from GitHub..."
-    "${PIP_CMD[@]}" install "opennote @ https://github.com/natarmr/OpenNote/archive/refs/heads/main.tar.gz"
-fi
+"$PYTHON_BIN" -m pip install "opennote @ ${TARBALL_URL}"
 
 # 3. Verify installation (bare console script first, python -m fallback)
 if command -v opennote &>/dev/null && opennote --help &>/dev/null; then

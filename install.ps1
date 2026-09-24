@@ -1,8 +1,14 @@
 # OpenNote Installer - PowerShell (Windows)
-# Usage: iwr -useb https://ramratan.in/install.ps1 | iex
-# Alternative: curl.exe -fsSL https://ramratan.in/install | bash  (Git Bash)
+# Fetches OpenNote from GitHub (no PyPI, no extra hosting).
+# Usage: iwr -useb https://raw.githubusercontent.com/natarmr/OpenNote/main/install.ps1 | iex
+# Alternative: curl.exe -fsSL https://raw.githubusercontent.com/natarmr/OpenNote/main/install | bash  (Git Bash)
+#
+# NOTE: never `pip install opennote` — that PyPI name belongs to an unrelated
+# video-API SDK. OpenNote installs only from the GitHub tarball below.
 
 $ErrorActionPreference = "Stop"
+
+$TarballUrl = "https://github.com/natarmr/OpenNote/archive/refs/heads/main.tar.gz"
 
 # 1. Resolve Python
 $pythonBin = $null
@@ -23,18 +29,10 @@ try {
     exit 1
 }
 
-# 2. Install
+# 2. Install from the GitHub tarball (PEP 508 direct reference).
 Write-Host "Installing OpenNote..."
-$installed = $false
-try {
-    & $pythonBin -m pip install --quiet "opennote" 2>$null
-    if ($LASTEXITCODE -eq 0) { $installed = $true; Write-Host "Installed from PyPI." }
-} catch {}
-if (-not $installed) {
-    Write-Host "PyPI not available, installing from GitHub..."
-    & $pythonBin -m pip install "opennote @ https://github.com/natarmr/OpenNote/archive/refs/heads/main.tar.gz"
-    if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed"; exit 1 }
-}
+& $pythonBin -m pip install "opennote @ $TarballUrl"
+if ($LASTEXITCODE -ne 0) { Write-Error "pip install failed"; exit 1 }
 
 # 3. Verify (bare console script first, python -m fallback)
 if (Get-Command opennote -ErrorAction SilentlyContinue) { try { opennote --help | Out-Null; Write-Host "OpenNote installed successfully! Run: opennote --help"; exit 0 } catch {} }

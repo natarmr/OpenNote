@@ -4,15 +4,17 @@
 
 ```bash
 # macOS / Linux / Git Bash / WSL
-curl -fsSL https://ramratan.in/install | bash
+curl -fsSL https://raw.githubusercontent.com/natarmr/OpenNote/main/install | bash
 
 # Windows PowerShell 5.1 — bare `curl` is an alias for Invoke-WebRequest, use:
-curl.exe -fsSL https://ramratan.in/install | bash
+curl.exe -fsSL https://raw.githubusercontent.com/natarmr/OpenNote/main/install | bash
 # or native PowerShell:
-iwr -useb https://ramratan.in/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/natarmr/OpenNote/main/install.ps1 | iex
 ```
 
-The installer resolves `python3` → `python` → `py`, requires 3.10+, installs via `python -m pip` (PyPI, GitHub tarball fallback), then verifies with `opennote --help`.
+The installer resolves `python3` → `python` → `py`, requires 3.10+, installs from the GitHub tarball via `python -m pip`, then verifies with `opennote --help`.
+
+*Warning:* never run bare `pip install opennote` — that PyPI name belongs to an unrelated video-API SDK.
 
 ## From source (developers)
 

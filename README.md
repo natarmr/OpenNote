@@ -80,13 +80,15 @@ In a world dominated by Artificial Intelligence, having the ability to think and
 
 ```bash
 # macOS / Linux / Git Bash / WSL
-curl -fsSL https://ramratan.in/install | bash
+curl -fsSL https://raw.githubusercontent.com/natarmr/OpenNote/main/install | bash
 
 # Windows PowerShell 5.1 — bare `curl` is an alias for Invoke-WebRequest, use:
-curl.exe -fsSL https://ramratan.in/install | bash
+curl.exe -fsSL https://raw.githubusercontent.com/natarmr/OpenNote/main/install | bash
 # or native PowerShell:
-iwr -useb https://ramratan.in/install.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/natarmr/OpenNote/main/install.ps1 | iex
 ```
+
+*Warning:* never run bare `pip install opennote` — that PyPI name belongs to an unrelated video-API SDK. The installers above fetch OpenNote from the GitHub tarball instead.
 ---
 ## 🧭 Usage
 

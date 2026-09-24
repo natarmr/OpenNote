@@ -8,11 +8,11 @@
 
 ```bash
 # macOS / Linux / Git Bash / WSL
-curl -fsSL https://ramratan.in/install | bash
+curl -fsSL https://raw.githubusercontent.com/natarmr/OpenNote/main/install | bash
 
 # Windows PowerShell (bare `curl` is an alias — use one of these)
-curl.exe -fsSL https://ramratan.in/install | bash
-iwr -useb https://ramratan.in/install.ps1 | iex
+curl.exe -fsSL https://raw.githubusercontent.com/natarmr/OpenNote/main/install | bash
+iwr -useb https://raw.githubusercontent.com/natarmr/OpenNote/main/install.ps1 | iex
 ```
 
 ### From source (developers)

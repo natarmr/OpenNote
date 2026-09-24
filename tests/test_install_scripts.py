@@ -45,7 +45,11 @@ def test_install_ps1_uses_github_tarball_only():
 
 
 def test_readme_and_install_doc_point_at_raw_github():
-    for name in ("README.md", "docs/1-INSTALLATION/index.md"):
+    for name in (
+        "README.md",
+        "docs/0-START-HERE/index.md",
+        "docs/1-INSTALLATION/index.md",
+    ):
         text = _read(name)
         assert "raw.githubusercontent.com/natarmr/OpenNote/main/install" in text
         assert "ramratan.in/install" not in text

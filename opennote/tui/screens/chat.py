@@ -1864,6 +1864,44 @@ class ChatScreen(Screen):
         def handler(key: Optional[str]) -> None:
             if not key:
                 return
+            key = key.strip()
+            # URL pasted at the key prompt → endpoint override (the exact
+            # mistake in the bug report: user pasted a tunnel /v1/models URL).
+            # Detect by shape, not content, so `not-needed` still flows to keys.
+            if key.lower().startswith(("http://", "https://")):
+                from opennote.auth.cli import _normalize_endpoint_url
+
+                try:
+                    normalized = _normalize_endpoint_url(key)
+                except ValueError as e:
+                    self.transcript.add_error(str(e))
+                    return
+                try:
+                    from opennote.auth.config import AuthConfig
+
+                    AuthConfig().set_base_url(pid, normalized)
+                    try:
+                        from opennote.capabilities import clear_cached as _clear_caps
+
+                        _clear_caps()
+                    except Exception:
+                        pass
+                    self.transcript.add_info(f"Endpoint for {pid} set to {normalized}")
+                except Exception as e:
+                    self.transcript.add_error(str(e))
+                    return
+                # Re-prompt for the actual key (hint that keyless tunnels use `not-needed`).
+                from opennote.tui.dialogs import ask_input
+
+                ask_input(
+                    self.app,
+                    f"Connect {pid}",
+                    f"Endpoint saved. Now paste the API key for {pid} (use `not-needed` for keyless servers, or env {get_provider(pid).env_var}):",
+                    placeholder="not-needed",
+                    password=True,
+                    on_submit=self._on_connect_key(pid),
+                )
+                return
             from opennote.auth.config import AuthConfig
             from opennote.auth.keychain import mask_key, set_key
             from opennote.auth.registry import get_provider

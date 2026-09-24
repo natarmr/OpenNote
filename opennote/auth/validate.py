@@ -62,23 +62,40 @@ def _model_ids(payload) -> List[str]:
     return []
 
 
+def _effective_models_url(provider: Provider) -> str:
+    """Return the provider's models URL, honouring an endpoint override."""
+    try:
+        from opennote.auth.config import AuthConfig
+
+        override = AuthConfig().get(provider.id)
+        base = override.base_url_override if override and override.base_url_override else None
+        if base:
+            return base.rstrip("/") + "/models"
+    except Exception:
+        pass
+    return provider.models_url
+
+
 def validate_key(
     provider: Provider,
     api_key: str,
     transport: Optional[httpx.BaseTransport] = None,
     timeout: float = DEFAULT_TIMEOUT,
+    models_url: Optional[str] = None,
 ) -> ValidationResult:
     """Validate ``api_key`` against ``provider``.
 
     ``transport`` is injectable for tests (``httpx.MockTransport``); when None
-    a real connection is made.
+    a real connection is made. ``models_url`` overrides the provider's
+    ``models_url`` (used for tunnel endpoints).
     """
     headers = _headers(provider, api_key.strip())
+    target_url = models_url or _effective_models_url(provider)
     try:
         with httpx.Client(
             transport=transport, timeout=timeout, follow_redirects=True
         ) as client:
-            response = client.get(provider.models_url, headers=headers)
+            response = client.get(target_url, headers=headers)
     except httpx.HTTPError:
         return ValidationResult.network()
 

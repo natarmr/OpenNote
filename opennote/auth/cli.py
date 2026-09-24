@@ -114,9 +114,12 @@ def auth_list():
             key_text = "-"
         model = settings.model or "(auto-pick)"
         validated = settings.last_validated_at or "never"
+        endpoint = settings.base_url_override or "-"
+        if endpoint != "-" and endpoint == provider.base_url:
+            endpoint = "-"
         typer.echo(
             f"  {provider.id:<10} {provider.label:<14} key={key_text:<14} "
-            f"source={source:<18} model={model:<28} validated={validated}"
+            f"source={source:<18} model={model:<28} endpoint={endpoint} validated={validated}"
         )
 
 
@@ -219,6 +222,97 @@ def auth_remove(
         typer.echo(f"Removed {provider.label} key and config.")
     else:
         typer.echo(f"Nothing to remove for {provider.label}.")
+
+
+def _normalize_endpoint_url(raw: str) -> str:
+    """Normalise a tunnel base URL to a `/v1` endpoint.
+
+    - Must be http(s)://
+    - Strips trailing slashes / `/models` / `/v1` / `/v1/models` then appends `/v1`
+    """
+    url = raw.strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise ValueError("Endpoint URL must start with http:// or https://")
+    # Strip trailing slashes first.
+    url = url.rstrip("/")
+    # Handle /v1/models or /models suffix.
+    lower = url.lower()
+    if lower.endswith("/v1/models"):
+        url = url[: -len("/v1/models")]
+    elif lower.endswith("/models"):
+        # Could be /v1/models already handled above, or bare /models.
+        url = url[: -len("/models")]
+        if url.lower().endswith("/v1"):
+            url = url[: -len("/v1")]
+    url = url.rstrip("/")
+    if not url.lower().endswith("/v1"):
+        url = url + "/v1"
+    return url
+
+
+@auth_app.command("endpoint")
+def auth_endpoint(
+    action: str = typer.Argument(..., help="Action: set, list, clear."),
+    provider_id: str = typer.Argument(None, help="Provider id (for set/clear)."),
+    url: str = typer.Argument(None, help="Endpoint URL (for set)."),
+):
+    """Manage per-provider endpoint overrides (tunnel URLs for Colab/Kaggle).
+
+    Examples:
+      opennote auth endpoint set openai https://abc.trycloudflare.com
+      opennote auth endpoint list
+      opennote auth endpoint clear openai
+    """
+    config = AuthConfig()
+    if action == "list":
+        providers = config.providers()
+        shown = False
+        for pid in sorted(providers):
+            s = providers[pid]
+            if s.base_url_override:
+                try:
+                    provider = get_provider(pid)
+                    eff = s.base_url_override
+                    default = provider.base_url
+                    typer.echo(f"  {pid:<10} {eff}  (default: {default})")
+                except ValueError:
+                    typer.echo(f"  {pid:<10} {s.base_url_override}")
+                shown = True
+        if not shown:
+            typer.echo("No endpoint overrides set.")
+            typer.echo("Set one with: opennote auth endpoint set <provider> <https://.../v1>")
+        return
+    if action == "set":
+        if not provider_id or not url:
+            _print_error("Usage: opennote auth endpoint set <provider> <url>")
+        try:
+            get_provider(provider_id)
+        except ValueError as e:
+            _print_error(str(e))
+        try:
+            normalized = _normalize_endpoint_url(url)
+        except ValueError as e:
+            _print_error(str(e))
+        config.set_base_url(provider_id, normalized)
+        typer.echo(f"[ok] Endpoint for {provider_id} set to {normalized}")
+        typer.echo("Use `opennote auth add --no-verify` for keyless tunnels, then `auth models --set <id>`.")
+        return
+    if action == "clear":
+        if not provider_id:
+            _print_error("Usage: opennote auth endpoint clear <provider>")
+        try:
+            get_provider(provider_id)
+        except ValueError as e:
+            _print_error(str(e))
+        settings = config.get(provider_id)
+        if not settings or not settings.base_url_override:
+            typer.echo(f"No endpoint override for {provider_id}.")
+            return
+        settings.base_url_override = None
+        config.save()
+        typer.echo(f"[ok] Endpoint override for {provider_id} cleared.")
+        return
+    _print_error("Unknown action. Use: set, list, clear.")
 
 
 def provider_ids() -> str:

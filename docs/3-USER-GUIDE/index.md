@@ -29,14 +29,20 @@ opennote ask "<question>" --notebook <name> [--provider groq] [--top-k 5] [--mul
 opennote golden golden.tsv --notebook <name> --top-k 5   # recall@k check (TSV: query, source, pages)
 ```
 
-## Providers and local models (BYOK)
+## Providers, tunnel endpoints, and local models (BYOK)
 
 ```bash
 opennote auth add anthropic        # prompts for key, validates live, auto-picks a model
-opennote auth list                 # providers, key source (keychain/env), selected models
+opennote auth list                 # providers, key source, selected models, endpoint overrides
 opennote auth models openai        # live chat models; --set <id> to change default
 opennote auth verify               # re-validate stored keys
 opennote auth remove groq
+
+# Remote tunnel (Colab/Kaggle): OpenAI-compat server (llama-cpp/ollama/vLLM) + tunnel URL
+opennote auth endpoint set openai https://abc.trycloudflare.com/v1   # normalises /models → /v1
+opennote auth add openai --no-verify                                  # keyless tunnels: enter `not-needed`
+opennote auth models openai --set /content/models/qwen.gguf            # pick the tunnel's model id
+opennote ask "..." --provider openai   # now routes to the tunnel
 
 opennote local add D:\models\qwen.gguf my-qwen --n-ctx 4096
 opennote local list                # * marks active
@@ -50,6 +56,8 @@ opennote ask "..." --provider local
 opennote artifacts export --notebook <name>              # JSON dump of saved artifacts
 opennote artifacts show <substring> -n <name> --tree     # render a mind-map in-terminal (others as Markdown)
 opennote artifacts check -n <name> --topic "<t>"         # live self-check: generates + renders every studio mode
+
+# TUI tip: pasting a https://… URL at the “API key” prompt for /connect is handled as an endpoint, not a key
 ```
 
 In the TUI (`opennote`), `Tab` cycles `ask → search → studio`:

@@ -19,7 +19,7 @@ iwr -useb https://raw.githubusercontent.com/natarmr/OpenNote/main/install.ps1 | 
 
 ```bash
 pip install -e ".[dev]"
-pytest -q   # full suite, 455/455 pass
+pytest -q   # full suite, 491/491 pass
 ```
 
 See [Deploy](../1-INSTALLATION/index.md) for details and troubleshooting.

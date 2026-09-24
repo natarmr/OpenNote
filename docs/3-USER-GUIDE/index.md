@@ -47,15 +47,17 @@ opennote ask "..." --provider local
 ## Studio artifacts and the TUI
 
 ```bash
-opennote artifacts export --notebook <name>              # JSON dump
-opennote artifacts show <substring> -n <name> --tree     # render a mind-map in-terminal
-opennote artifacts check -n <name> --topic "<t>"         # self-check all studio modes
+opennote artifacts export --notebook <name>              # JSON dump of saved artifacts
+opennote artifacts show <substring> -n <name> --tree     # render a mind-map in-terminal (others as Markdown)
+opennote artifacts check -n <name> --topic "<t>"         # live self-check: generates + renders every studio mode
 ```
 
 In the TUI (`opennote`), `Tab` cycles `ask → search → studio`:
 `/mindmap /study /faq /briefing /timeline /suggest /audio /video` generate,
-`/open` views artifacts, `/use <skill> <task>` applies an installed skill,
-`/model /theme /context /skills /agents /capabilities` manage the session.
+`/open` views artifacts (mind-maps as a tree, others as Markdown; `artifacts show --tree` on CLI),
+`/use <skill> <task>` applies an installed skill for the next answer,
+`/model /theme /context /skills /skill /plugins /agents /agent /capabilities` manage the session
+(`Tab` autocomplete, `Ctrl+P` palette, `/snake` waiting-room game).
 
 ## 15-minute checklist
 

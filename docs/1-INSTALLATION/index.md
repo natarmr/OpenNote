@@ -21,7 +21,7 @@ The installer resolves `python3` → `python` → `py`, requires 3.10+, installs
 ```bash
 pip install -e ".[dev]"
 opennote --help
-pytest -q   # full suite, 455/455 pass
+pytest -q   # full suite, 491/491 pass
 ```
 
 Optional extras: `pip install -e ".[local]"` for offline GGUF inference (`llama-cpp-python`).

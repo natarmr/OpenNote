@@ -22,7 +22,7 @@ Every query runs **BM25 + vectors** (blend with `--bm25-alpha`, disable with `--
 
 ## 5. Studio artifacts — from sources to study material
 
-Six generators turn retrieved context into saved Markdown under `notebook/artifacts/`: **mind-map** (rendered as an in-terminal tree), **study guide**, **FAQ**, **briefing**, **timeline**, **suggested questions** — plus **narrated audio** (TTS chain groq → openai → gemini → edge-tts) and **narrated video** (Pillow slides + TTS + ffmpeg). Every stage degrades honestly: no backend, no fake output — you get a transcript/script instead.
+Six text generators turn retrieved context into saved Markdown under `notebook/artifacts/`: **mind-map** (parsed to a tree — `parse_mindmap` → in-terminal `Rich Tree` + scrollable viewer, `artifacts show --tree` on CLI), **study guide**, **FAQ**, **briefing**, **timeline**, **suggested questions** — plus **narrated audio** (TTS chain groq → openai → gemini → edge-tts, capped at 5,000 chars) and **narrated video** (Pillow slides → per-slide TTS → ffmpeg mux, max 20 slides). Every stage degrades honestly: no backend or no `ffmpeg`, no fake output — you get a transcript/script instead (`artifacts check` is the fast live self-check).
 
 ## 6. Context & cost — nothing hidden
 

@@ -57,7 +57,7 @@ In a world dominated by Artificial Intelligence, having the ability to think and
 | **Studio generators** | Mind‑map, study guide, FAQ, briefing, timeline, suggested questions — with audio and narrated video output |
 | **TTS chain** | groq → openai → gemini → edge-tts; graceful degradation to markdown transcript |
 | **Narrated video** | Per‑slide Pillow images + TTS mp3 + ffmpeg mux to MP4; degrades to script + slides if any stage fails |
-| **Textual TUI** | Tab cycles `ask → search → studio`; `/studio` submenu; slash commands `/mindmap /study /faq /briefing /timeline /suggest /audio /video /open /theme /help` |
+| **Textual TUI** | Tab cycles `ask → search → studio`; `/studio` submenu; slash commands `/mindmap /study /faq /briefing /timeline /suggest /audio /video /open` · `/use <skill>` · `/skills /skill /plugins /agents /agent /capabilities /context /theme /help` + `/snake` waiting-room game |
 
 ---
 ## 🆚 Open Notebook vs Google Notebook LM

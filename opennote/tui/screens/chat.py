@@ -1833,10 +1833,71 @@ class ChatScreen(Screen):
                 self.transcript.add_error(str(e))
             return
         items = [(p.id, f"{p.label} ({p.id})") for p in all_providers()]
+        items.append(("__endpoint__", "Colab / Kaggle endpoint (tunnel URL)"))
         item_list(self.app, "Connect: provider", items, on_pick=self._on_connect_provider_picked)
 
     def _on_connect_provider_picked(self, pid: Optional[str]) -> None:
         if not pid:
+            return
+        if pid == "__endpoint__":
+            self._connect_endpoint()
+            return
+        from opennote.auth.registry import get_provider
+
+        try:
+            self._connect_provider(get_provider(pid))
+        except ValueError as e:
+            self.transcript.add_error(str(e))
+
+    def _connect_endpoint(self) -> None:
+        """Start the Colab/Kaggle tunnel endpoint flow: URL → provider → key."""
+        ask_input(
+            self.app,
+            "Colab / Kaggle endpoint",
+            "Paste tunnel URL (https://…/v1, /models suffix stripped automatically):",
+            placeholder="https://…trycloudflare.com/v1",
+            on_submit=self._on_endpoint_url,
+        )
+
+    def _on_endpoint_url(self, url: Optional[str]) -> None:
+        if not url:
+            return
+        url = url.strip()
+        from opennote.auth.cli import _normalize_endpoint_url
+
+        try:
+            normalized = _normalize_endpoint_url(url)
+        except ValueError as e:
+            self.transcript.add_error(str(e))
+            return
+        self._pending_endpoint_url = normalized  # type: ignore[attr-defined]
+        self.transcript.add_info(f"Endpoint URL captured: {normalized}")
+        from opennote.auth.registry import all_providers
+
+        items = [(p.id, f"{p.label} ({p.id})") for p in all_providers()]
+        item_list(self.app, "Attach endpoint to provider", items, on_pick=self._on_endpoint_provider_picked)
+
+    def _on_endpoint_provider_picked(self, pid: Optional[str]) -> None:
+        if not pid:
+            return
+        url = getattr(self, "_pending_endpoint_url", None)
+        if not url:
+            self.transcript.add_error("No endpoint URL captured.")
+            return
+        try:
+            from opennote.auth.config import AuthConfig
+
+            AuthConfig().set_base_url(pid, url)
+            try:
+                from opennote.capabilities import clear_cached as _clear_caps
+
+                _clear_caps()
+            except Exception:
+                pass
+            self.transcript.add_info(f"Endpoint for {pid} set to {url}")
+            self._pending_endpoint_url = None  # type: ignore[attr-defined]
+        except Exception as e:
+            self.transcript.add_error(str(e))
             return
         from opennote.auth.registry import get_provider
 

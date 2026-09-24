@@ -101,6 +101,29 @@ class StudioFailed(Message):
         self.error = error
 
 
+class SourcesResultMsg(Message):
+    def __init__(self, sources) -> None:
+        super().__init__()
+        self.sources = sources
+
+
+class SourcesFailed(Message):
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self.error = error
+
+
+class ModelsResultMsg(Message):
+    """validate_key finished off the UI thread (connect / switch-model flow)."""
+
+    def __init__(self, provider_id: str, key: Optional[str], result, flow: str = "connect") -> None:
+        super().__init__()
+        self.provider_id = provider_id
+        self.key = key
+        self.result = result
+        self.flow = flow
+
+
 class ChatScreen(Screen):
     BINDINGS = [
         Binding("ctrl+c,ctrl+q", "quit", "Quit", priority=True),
@@ -142,6 +165,12 @@ class ChatScreen(Screen):
         # How many transcript messages have been rendered into the widget
         # (prevents resize-driven re-render from appending Q+A twice).
         self._history_rendered: int = 0
+        # Session retriever cache: constructing a Retriever opens Chroma
+        # clients and snapshots the BM25 corpus, so reuse per notebook.
+        # Invalidated on ingest/switch (BM25 would otherwise go stale).
+        self._retriever_cache: Dict = {}
+        # TTL cache for slow sidebar sections (skill/plugin discovery, git).
+        self._sidebar_slow_cache: Dict = {}
 
     # -- composition -------------------------------------------------------
 
@@ -363,43 +392,56 @@ class ChatScreen(Screen):
         except Exception:
             pass
         # Services: provider/model + currently active skills and plugins.
+        # Slow part (filesystem discovery, plugin load) is TTL-cached.
         try:
             lines = [f"{pid} | {model}" if model else pid]
-            try:
-                from opennote.skills.registry import SkillRegistry
+            slow = self._sidebar_slow("services")
+            if slow is None:
+                slow = []
+                try:
+                    from opennote.skills.registry import SkillRegistry
 
-                skills = SkillRegistry.discover().list()
-                lines.append(
-                    "skills: " + ", ".join(s.name for s in skills) if skills else "skills: none"
-                )
-            except Exception:
-                pass
-            try:
-                from opennote.capabilities import get_capabilities
-                from opennote.plugins.loader import PluginContext, PluginLoader
+                    skills = SkillRegistry.discover().list()
+                    slow.append(
+                        "skills: " + ", ".join(s.name for s in skills) if skills else "skills: none"
+                    )
+                except Exception:
+                    pass
+                try:
+                    from opennote.capabilities import get_capabilities
+                    from opennote.plugins.loader import PluginContext, PluginLoader
 
-                caps = get_capabilities()
-                loader = PluginLoader(PluginContext(capabilities=caps, notebook=self.notebook))
-                loader.load()
-                names = [h._name for h in loader.hooks] + [
-                    t for t in loader.tools if not any(t in h.tools for h in loader.hooks)
-                ]
-                lines.append("plugins: " + ", ".join(names) if names else "plugins: none")
-            except Exception:
-                pass
+                    caps = get_capabilities()
+                    loader = PluginLoader(PluginContext(capabilities=caps, notebook=self.notebook))
+                    loader.load()
+                    names = [h._name for h in loader.hooks] + [
+                        t for t in loader.tools if not any(t in h.tools for h in loader.hooks)
+                    ]
+                    slow.append("plugins: " + ", ".join(names) if names else "plugins: none")
+                except Exception:
+                    pass
+                self._sidebar_slow("services", slow)
+            lines.extend(slow)
             sidebar.set_services(lines)
         except Exception:
             pass
-        # Footer: cwd + git branch (left), app version (right).
+        # Footer: cwd + git branch (left), app version (right). Branch lookup
+        # shells out to git: TTL-cached for the same reason.
         try:
             from pathlib import Path
 
             from opennote import __version__
-            from opennote.tui.widgets.sidebar import git_branch
 
-            cwd = Path.cwd()
-            branch = git_branch(cwd)
-            left = f"{cwd.name}:{branch}" if branch else cwd.name
+            cached_footer = self._sidebar_slow("footer")
+            if cached_footer is None:
+                from opennote.tui.widgets.sidebar import git_branch
+
+                cwd = Path.cwd()
+                branch = git_branch(cwd)
+                cached_footer = (cwd.name, branch)
+                self._sidebar_slow("footer", cached_footer)
+            cwd_name, branch = cached_footer
+            left = f"{cwd_name}:{branch}" if branch else cwd_name
             sidebar.set_footer(left, f"OpenNote {__version__}")
         except Exception:
             pass
@@ -408,6 +450,46 @@ class ChatScreen(Screen):
 
     def _reset_history_rendered(self) -> None:
         self._history_rendered = 0
+
+    _SIDEBAR_SLOW_TTL = 60.0
+
+    def _sidebar_slow(self, section: str, value=None):
+        """TTL cache getter/setter for slow sidebar sections.
+
+        ``_sidebar_slow("services")`` returns cached lines or None;
+        ``_sidebar_slow("services", lines)`` stores them.
+        """
+        try:
+            import time as _time
+
+            now = _time.monotonic()
+        except Exception:
+            return value if value is not None else None
+        if value is not None:
+            self._sidebar_slow_cache[section] = (now, value)
+            return value
+        hit = self._sidebar_slow_cache.get(section)
+        if hit is not None and now - hit[0] < self._SIDEBAR_SLOW_TTL:
+            return hit[1]
+        return None
+
+    def _get_retriever(self, top_k=None, use_bm25: bool = True, bm25_alpha: float = 0.5):
+        """Session-cached Retriever for the current notebook (see __init__)."""
+        from opennote.retrieval.retriever import Retriever
+
+        nb = self.notebook
+        key = (str(nb.directory), top_k, use_bm25, bm25_alpha)
+        ret = self._retriever_cache.get(key)
+        if ret is None:
+            kwargs: Dict[str, object] = {"use_bm25": use_bm25, "bm25_alpha": bm25_alpha}
+            if top_k is not None:
+                kwargs["top_k"] = top_k
+            ret = Retriever(nb, **kwargs)  # type: ignore[arg-type]
+            self._retriever_cache[key] = ret
+        return ret
+
+    def _invalidate_retrievers(self) -> None:
+        self._retriever_cache = {}
 
     def _render_history(self, messages: Optional[List[Dict]] = None) -> None:
         if self.notebook is None:
@@ -509,6 +591,12 @@ class ChatScreen(Screen):
         provider_id = self._client.provider_id if self._client else None
         if skill_block:
             question = f"{skill_block}\n\nUser task: {question}"
+        # Session-cached retriever; fall back to None (agent_turn builds or
+        # reports it) when the notebook has no index yet.
+        try:
+            retriever = self._retriever or (self._get_retriever() if notebook is not None else None)
+        except ValueError:
+            retriever = self._retriever
         try:
             agent = agent_turn(
                 notebook,
@@ -516,7 +604,7 @@ class ChatScreen(Screen):
                 provider_id=provider_id,
                 history=history,
                 client=self._client,
-                retriever=self._retriever,
+                retriever=retriever,
                 should_cancel=lambda: self._cancel_flag,
                 on_round=lambda used, total: self.app.call_from_thread(
                     self.post_message, RoundProgress(used, total)
@@ -552,13 +640,11 @@ class ChatScreen(Screen):
 
     @work(thread=True, exclusive=True, group="search")
     async def _run_search(self, question: str) -> None:
-        notebook = self.notebook
         try:
             if self._retriever is not None:
                 results = self._retriever.search(question)
             else:
-                retriever = Retriever(notebook, top_k=5)
-                results = retriever.search(question)
+                results = self._get_retriever(top_k=5).search(question)
             text = render_results(results)
         except Exception as e:
             logger.exception("Search failed")
@@ -692,11 +778,10 @@ class ChatScreen(Screen):
     async def _run_video(self, topic: str) -> None:
         notebook = self.notebook
         try:
-            from opennote.retrieval.retriever import Retriever
             from opennote.video import save_video_artifact
 
             try:
-                retriever = self._retriever or Retriever(notebook, top_k=8)
+                retriever = self._retriever or self._get_retriever(top_k=8)
                 results = retriever.search(topic)
             except ValueError:
                 self.app.call_from_thread(
@@ -781,10 +866,9 @@ class ChatScreen(Screen):
             generate_timeline,
             save_artifact,
         )
-        from opennote.retrieval.retriever import Retriever
 
         try:
-            retriever = self._retriever or Retriever(notebook, top_k=8)
+            retriever = self._retriever or self._get_retriever(top_k=8)
             results = retriever.search(topic)
         except ValueError:
             return ""
@@ -1310,17 +1394,36 @@ class ChatScreen(Screen):
     def _list_sources(self, _arg: str = "") -> None:
         if self.notebook is None:
             return
+        if self.prompt.busy:
+            self.transcript.add_error("Busy.")
+            return
+        self.prompt.set_busy("Listing sources...")
+        self._run_list_sources()
+
+    @work(thread=True, exclusive=True, group="search")
+    async def _run_list_sources(self) -> None:
         try:
-            retriever = Retriever(self.notebook)
+            retriever = self._retriever or self._get_retriever()
+            sources = retriever.sources()
         except Exception as e:
-            self.transcript.add_error(str(e))
+            logger.exception("List sources failed")
+            self.app.call_from_thread(self.post_message, SourcesFailed(str(e)))
             return
-        sources = retriever.sources()
-        if not sources:
+        self.app.call_from_thread(self.post_message, SourcesResultMsg(sources))
+
+    def on_sources_result_msg(self, msg: SourcesResultMsg) -> None:
+        self._notify_done("Sources listed.")
+        if not msg.sources:
             self.transcript.add_info("No sources indexed yet.")
-            return
-        for src in sources:
-            self.transcript.add_info(f"  {src}")
+        else:
+            for src in msg.sources:
+                self.transcript.add_info(f"  {src}")
+        self.prompt.set_idle()
+
+    def on_sources_failed(self, msg: SourcesFailed) -> None:
+        self._notify_done(f"Sources failed: {msg.error}")
+        self.transcript.add_error(msg.error)
+        self.prompt.set_idle()
 
     def _remove_source(self, arg: str = "") -> None:
         if self.notebook is None:
@@ -1503,6 +1606,7 @@ class ChatScreen(Screen):
         self.notebook = notebook
         self.transcript.clear()
         self._reset_history_rendered()
+        self._invalidate_retrievers()
         self._banner_live = False
         self._show_banner()
         msgs = load_transcript(notebook)
@@ -1530,6 +1634,7 @@ class ChatScreen(Screen):
         self.notebook = notebook
         self.transcript.clear()
         self._reset_history_rendered()
+        self._invalidate_retrievers()
         self._banner_live = False
         self._show_banner()
         self._sync_meta()
@@ -1687,6 +1792,7 @@ class ChatScreen(Screen):
 
     def on_ingest_result_msg(self, msg: IngestResultMsg) -> None:
         self._notify_done(f"Indexed {msg.count} chunk(s) from {msg.target}")
+        self._invalidate_retrievers()  # index changed: cached BM25 would go stale
         self.transcript.add_info(f"Indexed {msg.count} chunk(s) from {msg.target}")
         if msg.fallback:
             self.transcript.add_info("Note: local fallback used (Docling missing C++ compiler). Install VS Build Tools or run /ingest with --parser fallback for consistent behavior.")
@@ -1776,19 +1882,50 @@ class ChatScreen(Screen):
     def _open_connect_model(self, provider, key: Optional[str] = None) -> None:
         from opennote.auth.config import AuthConfig
         from opennote.auth.keychain import resolve_key
-        from opennote.auth.models import rank_models
-        from opennote.auth.validate import validate_key
 
         if key is None:
             key = resolve_key(provider.id)
         if not key:
             self.transcript.add_error("No API key stored for this provider.")
             return
+        if self.prompt.busy:
+            self.transcript.add_error("Busy.")
+            return
 
+        self.prompt.set_busy(f"Validating {provider.id} key...")
+        self._run_validate_models(provider.id, key)
+
+    @work(thread=True, exclusive=True, group="connect")
+    async def _run_validate_models(self, provider_id: str, key: str, flow: str = "connect") -> None:
+        from opennote.auth.registry import get_provider
+        from opennote.auth.validate import validate_key
+
+        try:
+            result = validate_key(get_provider(provider_id), key)
+        except Exception as e:
+            logger.exception("Model validation failed")
+            result = None
+        self.app.call_from_thread(
+            self.post_message, ModelsResultMsg(provider_id, key, result, flow)
+        )
+
+    def on_models_result_msg(self, msg: ModelsResultMsg) -> None:
+        if getattr(msg, "flow", "connect") == "switch":
+            self._on_models_result_for_switch(msg)
+            return
+        from opennote.auth.config import AuthConfig
+        from opennote.auth.models import rank_models
+        from opennote.auth.registry import get_provider
+
+        self.prompt.set_idle()
+        try:
+            provider = get_provider(msg.provider_id)
+        except ValueError as e:
+            self.transcript.add_error(str(e))
+            return
         settings = AuthConfig().get(provider.id)
-
-        result = validate_key(provider, key)
-        if result.ok:
+        result = msg.result
+        if result is not None and result.ok:
             models = rank_models(provider, result.models)
         else:
             if result.error == "invalid-key":
@@ -1818,6 +1955,36 @@ class ChatScreen(Screen):
             on_pick=self._on_connect_model_picked(provider.id),
         )
 
+    def _on_models_result_for_switch(self, msg: ModelsResultMsg) -> None:
+        """Switch-model variant of the validation result (see _open_model_dialog)."""
+        from opennote.auth.config import AuthConfig
+        from opennote.auth.models import rank_models
+        from opennote.auth.registry import get_provider
+
+        self.prompt.set_idle()
+        try:
+            provider = get_provider(msg.provider_id)
+        except ValueError as e:
+            self.transcript.add_error(str(e))
+            return
+        current = getattr(self._client, "model", "") if self._client else ""
+        if msg.result is not None and msg.result.ok:
+            models = rank_models(provider, msg.result.models)
+        else:
+            models = list(provider.preferred_models)
+        if current and current not in models:
+            models.insert(0, current)
+        if not models:
+            self.transcript.add_info("No models available.")
+            return
+        items = [(m, f"{'* ' if m == current else ''}{m}") for m in models]
+        item_list(
+            self.app,
+            f"Switch model ({provider.id})",
+            items,
+            on_pick=self._on_model_picked,
+        )
+
     def _on_connect_model_picked(self, pid: str):
         def handler(model: Optional[str]) -> None:
             self._finish_connect(pid, model)
@@ -1836,6 +2003,12 @@ class ChatScreen(Screen):
             self.transcript.add_error(str(e))
             return
         self._client = client
+        try:
+            from opennote.capabilities import clear_cached as _clear_caps
+
+            _clear_caps()  # new key/model: capability snapshot is stale
+        except Exception:
+            pass
         self._sync_meta()
         self.transcript.add_info(f"Connected {pid} ({client.model}).")
 
@@ -1848,9 +2021,7 @@ class ChatScreen(Screen):
 
         from opennote.auth.config import AuthConfig
         from opennote.auth.keychain import resolve_key
-        from opennote.auth.models import rank_models
         from opennote.auth.registry import get_provider
-        from opennote.auth.validate import validate_key
 
         try:
             provider = get_provider(provider_id)
@@ -1861,16 +2032,16 @@ class ChatScreen(Screen):
         models: List[str] = []
         key = resolve_key(provider_id)
         if key:
-            result = validate_key(provider, key)
-            if result.ok:
-                models = rank_models(provider, result.models)
-            else:
-                models = list(provider.preferred_models)
-        else:
-            settings = AuthConfig().get(provider_id)
-            if settings and settings.model:
-                models = [settings.model]
-            models += [m for m in provider.preferred_models if m not in models]
+            if self.prompt.busy:
+                self.transcript.add_error("Busy.")
+                return
+            self.prompt.set_busy(f"Validating {provider_id} key...")
+            self._run_validate_models(provider_id, key, flow="switch")
+            return
+        settings = AuthConfig().get(provider_id)
+        if settings and settings.model:
+            models = [settings.model]
+        models += [m for m in provider.preferred_models if m not in models]
 
         if current and current not in models:
             models.insert(0, current)

@@ -44,10 +44,18 @@ def load_transcript(notebook) -> List[Dict]:
     try:
         with open(tpath, "r", encoding="utf-8") as f:
             data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        logging.getLogger("opennote.transcript").warning(
-            "Transcript file '%s' corrupt; returning empty.", tpath
-        )
+    except (json.JSONDecodeError, OSError) as exc:
+        # Never silently wipe history: quarantine the corrupt file so the
+        # failure is visible and recoverable, then start empty.
+        _log = logging.getLogger("opennote.transcript")
+        try:
+            import time as _time
+
+            backup = tpath.with_name(f"{tpath.stem}.corrupt.{int(_time.time())}.json")
+            tpath.rename(backup)
+            _log.warning("Transcript file '%s' corrupt (%s); moved to '%s'.", tpath, exc, backup.name)
+        except OSError:
+            _log.warning("Transcript file '%s' corrupt (%s).", tpath, exc)
         return []
     if isinstance(data, dict):
         msgs = data.get("messages", [])

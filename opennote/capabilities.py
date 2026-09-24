@@ -113,28 +113,54 @@ def _probe() -> Capabilities:
     return caps
 
 
-# Module-level cached probe; overridden in tests via FakeCapability
+# Module-level cached probe; overridden in tests via FakeCapability.
+# The probe walks the filesystem (skills/plugins/agents) and the keychain,
+# so production callers share one snapshot for _CACHE_TTL_SECONDS instead of
+# re-probing per turn. Env changes (new keys) propagate on expiry; call
+# clear_cached() after /connect-style mutations for immediate refresh.
 _cached: Optional[Capabilities] = None
+_cached_at: float = 0.0
+_CACHE_TTL_SECONDS = 120.0
 
 
 def get_capabilities() -> Capabilities:
     """Return the current capability probe; test hook: set FakeCapability first."""
-    global _cached
+    global _cached, _cached_at
     if _cached is not None:
-        return _cached
-    return _probe()
+        try:
+            import time as _time
+
+            if _time.monotonic() - _cached_at < _CACHE_TTL_SECONDS:
+                return _cached
+        except Exception:
+            pass
+    caps = _probe()
+    try:
+        import time as _time
+
+        _cached, _cached_at = caps, _time.monotonic()
+    except Exception:
+        _cached = caps
+    return caps
 
 
 def clear_cached() -> None:
     """Clear cached capabilities (e.g. after env change)."""
-    global _cached
+    global _cached, _cached_at
     _cached = None
+    _cached_at = 0.0
 
 
 def set_cached(caps: Capabilities) -> None:
     """For test use only — replace the global probe with a stub."""
-    global _cached
+    global _cached, _cached_at
     _cached = caps
+    try:
+        import time as _time
+
+        _cached_at = _time.monotonic()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

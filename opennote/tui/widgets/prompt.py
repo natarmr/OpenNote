@@ -84,11 +84,6 @@ class PromptInput(TextArea):
     async def _on_key(self, event: Key) -> None:
         popup = self._popup()
         if popup.display and popup.commands and event.key in ("up", "down"):
-            # Priority bindings already handled this; keep as fallback for
-            # Textual versions where priority bindings don't fully prevent
-            # the event from reaching this handler.
-            pass
-        if popup.display and popup.commands and event.key in ("up", "down"):
             popup.move(-1 if event.key == "up" else 1)
             event.stop()
             return

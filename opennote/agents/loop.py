@@ -29,6 +29,15 @@ logger = logging.getLogger("opennote.agents.loop")
 #: Maximum tool-calling rounds before we force "answer with what you have".
 MAX_ROUNDS = 5
 
+#: Per-chunk render cap inside tool payloads (citation validation uses the
+#: full stored objects, so this only bounds what the model is shown).
+_MAX_CHUNK_CHARS = 8000
+
+#: Per-turn retrieval cap: bounds O(rounds x chunks) prompt growth. Payloads
+#: past the cap render as an omission notice and are NOT stored, so citation
+#: indices always resolve to text the model actually saw.
+_MAX_RETRIEVED = 100
+
 TOOLS_LIST = ", ".join(TOOL_SCHEMAS)
 
 SYSTEM_TOOLS_HINT = (
@@ -90,6 +99,8 @@ def _tool_content(tool_name: str, payload: Any, offset: int = 0) -> str:
     """Serialize a tool's return value for the model's next turn.
 
     All retrieved chunks are wrapped in <source> tags (injection defense).
+    Chunk bodies are capped so one oversized chunk cannot blow the turn budget
+    (citation validation uses the full stored objects, not this rendering).
     """
     if isinstance(payload, str):
         return payload
@@ -102,6 +113,8 @@ def _tool_content(tool_name: str, payload: Any, offset: int = 0) -> str:
             idx = offset + i
             pages = r.metadata.get("pages") or r.metadata.get("page") or ""
             content = r.content.strip().replace("</source>", "<\\/source>").replace("<source", "<\\source")
+            if len(content) > _MAX_CHUNK_CHARS:
+                content = content[:_MAX_CHUNK_CHARS].rstrip() + "\n[…truncated…]"
             parts.append(f'<source id="{idx}" page="{pages}">\n[{idx}] {r.citation}\n{content}\n</source>')
         body = "\n\n".join(parts)
         # Repeat constraint after block (late weighting)
@@ -415,7 +428,9 @@ def agent_turn(
                     else:
                         final_answer = response.content
                 except Exception:
-                    final_answer = response.content
+                    # Fail closed: a crashed validator must not admit unvalidated text.
+                    logger.warning("Free-form validator crashed; abstaining", exc_info=True)
+                    final_answer = "sources don't contain this"
                 break
             # L49: a genuinely empty reply is a distinct failure from running out
             # of tool rounds — give the model one corrective nudge.
@@ -459,8 +474,15 @@ def agent_turn(
                     # Render *before* extending so this call's indices are
                     # offset past the already-retrieved results — the flat
                     # ``retrieved`` list is what citation validation uses.
-                    content = _tool_content(tc.name, payload, offset=len(retrieved))
-                    retrieved.extend(payload)
+                    if retrieved and len(retrieved) + len(payload) > _MAX_RETRIEVED:
+                        content = (
+                            f"Search returned {len(payload)} passages but the per-turn "
+                            f"retrieval cap ({_MAX_RETRIEVED}) is reached; answer from "
+                            f"the sources already retrieved or submit."
+                        )
+                    else:
+                        content = _tool_content(tc.name, payload, offset=len(retrieved))
+                        retrieved.extend(payload)
                 else:
                     content = _tool_content(tc.name, payload)
             except Exception as exc:  # tool failure must not kill the turn

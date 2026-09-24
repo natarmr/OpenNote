@@ -192,12 +192,25 @@ def _multihop(
         return None
     final = clean_thinking_content(final)
 
+    # Annotate partial coverage so silent worker gaps are visible, not hidden.
+    partial = [
+        i + 1
+        for i, a in enumerate(worker_answers)
+        if a == "[No answer]" or a.startswith("[No results")
+    ]
+    final_text = final.strip()
+    if final_text and partial:
+        final_text += (
+            f"\n\n*Note: {len(partial)} of {len(worker_answers)} sub-question(s) "
+            f"returned nothing; synthesized from partial coverage.*"
+        )
+
     # stash summed provider usage for the caller (may be all-zero → estimate)
     try:
         client.last_usage = acc if (acc.prompt_tokens or acc.completion_tokens) else None  # type: ignore[attr-defined]
     except Exception:
         pass
-    return final.strip(), all_results, synth_prompt, synth_messages
+    return final_text, all_results, synth_prompt, synth_messages
 
 
 def _track_usage(system, messages, answer, client, chunks, notebook) -> "ContextUsage | None":
@@ -289,8 +302,12 @@ def ask(
                 model=client.model,
                 usage=usage,
             )
-        # Fall through to single-shot on planner/ synthesizer failure
-        # (but still use single-shot's retriever.search(question) below)
+        # Fall through to single-shot on planner/synthesizer failure
+        # (but still use single-shot's retriever.search(question) below).
+        # Mark it: the caller asked for multihop, so say so on the answer.
+        multihop_fallback = True
+    else:
+        multihop_fallback = False
 
     results = retriever.search(question)
     if not results:
@@ -313,6 +330,8 @@ def ask(
     footer, sources_used = used_sources(answer, results)
     if footer:
         answer = f"{answer}\n\n{footer}"
+    if multihop_fallback:
+        answer = f"{answer}\n\n*Note: multi-hop planner unavailable; answered single-shot.*"
     usage = _track_usage(system, messages, answer, client, len(results), notebook)
     return AskResult(
         question=question,

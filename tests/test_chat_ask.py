@@ -88,3 +88,49 @@ def test_single_shot_honors_context_budget():
     assert "[truncated:" in system
     assert big not in system
     assert len(system) < 4000  # ~1k budget + system template, not 40k unbounded
+
+
+def _plan(*terms):
+    import types
+
+    return types.SimpleNamespace(
+        reasoning="r",
+        searches=[types.SimpleNamespace(term=t, instructions="i") for t in terms],
+    )
+
+
+def test_multihop_partial_coverage_annotated(monkeypatch):
+    import opennote.chat.planner as planner_mod
+
+    monkeypatch.setattr(planner_mod, "plan_queries", lambda q, c: _plan("t1", "t2"))
+
+    class SplitRetriever(FakeRetriever):
+        def search(self, query, **kwargs):
+            self.queries.append(query)
+            if "t2" in query:
+                return []
+            return list(self._results)
+
+    client = FakeClient("w1 [1]")
+    client.complete = lambda system, messages, max_tokens=1024: (
+        client.calls.append((system, messages, max_tokens)) or "final [1]"
+    )
+    out = ask(
+        StubNotebook(), "q", client=client,
+        retriever=SplitRetriever([_result("a.pdf", "alpha")]), multihop=True,
+    )
+    assert "partial coverage" in out.answer
+    assert "final [1]" in out.answer
+
+
+def test_multihop_planner_fallback_annotated(monkeypatch):
+    import opennote.chat.planner as planner_mod
+
+    monkeypatch.setattr(planner_mod, "plan_queries", lambda q, c: None)
+    client = FakeClient("ok [1]")
+    out = ask(
+        StubNotebook(), "q", client=client,
+        retriever=FakeRetriever([_result("a.pdf", "alpha")]), multihop=True,
+    )
+    assert "single-shot" in out.answer
+    assert "ok [1]" in out.answer

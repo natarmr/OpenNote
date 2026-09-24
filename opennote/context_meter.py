@@ -177,8 +177,21 @@ def _usage_file(notebook_dir: Optional[Path] = None) -> Path:
 def load_spent(notebook_dir: Optional[Path] = None) -> float:
     try:
         p = _usage_file(notebook_dir)
+    except Exception:
+        return 0.0
+    try:
         if p.exists():
             return float(json.loads(p.read_text(encoding="utf-8")).get("spent", 0.0))
+    except (ValueError, OSError, AttributeError) as exc:
+        # Corrupt spend file: quarantine it instead of silently resetting to $0.00.
+        try:
+            import time as _time
+
+            backup = p.with_name(f"{p.stem}.corrupt.{int(_time.time())}.json")
+            p.rename(backup)
+            logger.warning("Spend file '%s' corrupt (%s); moved to '%s'.", p, exc, backup.name)
+        except OSError:
+            logger.warning("Spend file '%s' corrupt (%s).", p, exc)
     except Exception:
         pass
     return 0.0
@@ -186,13 +199,16 @@ def load_spent(notebook_dir: Optional[Path] = None) -> float:
 
 def record_spent(amount: float, notebook_dir: Optional[Path] = None) -> float:
     """Add amount to cumulative spend file; returns new total."""
-    total = load_spent(notebook_dir) + max(0.0, amount)
+    prev = load_spent(notebook_dir)
+    total = prev + max(0.0, amount)
     try:
         p = _usage_file(notebook_dir)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps({"spent": total}), encoding="utf-8")
     except Exception as exc:
+        # Return what is actually persisted, not an inflated in-memory total.
         logger.debug("usage record failed: %s", exc)
+        return prev
     return total
 
 

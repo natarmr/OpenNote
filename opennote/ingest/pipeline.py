@@ -222,6 +222,17 @@ def ingest(
 
     total_indexed = 0
     failed_files: List[str] = []
+    # Batch manifest writes: one atomic save per 10 files + final flush
+    # instead of a full rewrite per file (safe: a crash only re-parses).
+    _manifest_pending = 0
+
+    def _mark_indexed(source: str, f_hash: str) -> None:
+        nonlocal _manifest_pending
+        vector_mgr.manifest.data[source] = f_hash
+        _manifest_pending += 1
+        if _manifest_pending % 10 == 0:
+            vector_mgr.manifest.save()
+
     for f, f_hash in files_to_process:
         source = str(f.resolve())
         try:
@@ -256,12 +267,12 @@ def ingest(
                 # record the hash so we don't re-parse it on every run.
                 logger.warning(f"No chunks extracted from '{f.name}'.")
                 _index_chunks(vector_mgr, notebook, source, [], batch_size)
-                vector_mgr.manifest.mark_indexed(source, f_hash)
+                _mark_indexed(source, f_hash)
                 continue
             logger.info(f"Extracted {len(chunks)} chunk(s) from '{f.name}'.")
             count = _index_chunks(vector_mgr, notebook, source, chunks, batch_size)
             total_indexed += count
-            vector_mgr.manifest.mark_indexed(source, f_hash)
+            _mark_indexed(source, f_hash)
         except Exception as e:  # noqa: BLE001
             logger.error(f"Failed to parse '{f.name}': {e}", exc_info=True)
             failed_files.append(f.name)
@@ -274,6 +285,7 @@ def ingest(
             f"No chunks indexed; {len(failed_files)} file(s) failed"
             f" ({', '.join(failed_files)}). See log for details."
         )
+    vector_mgr.manifest.save()  # final flush of batched marks
     return total_indexed
 
 

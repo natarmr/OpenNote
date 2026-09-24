@@ -57,6 +57,53 @@ def test_direct_answer_no_tools():
     assert len(client.sent) == 1
 
 
+def test_validator_crash_abstains_not_accepts(monkeypatch):
+    import opennote.validation.citation as vc
+
+    def boom(answer, chunk_map):
+        raise RuntimeError("validator down")
+
+    monkeypatch.setattr(vc, "validate_freeform_answer", boom)
+    client = ScriptedClient(
+        [
+            ChatResponse(
+                content="",
+                tool_calls=[ToolCall(id="t1", name="search", arguments={"query": "q"})],
+            ),
+            ChatResponse(content="Claim [1]."),
+        ]
+    )
+    out = agent_turn(
+        StubNotebook(), "q", client=client, retriever=FakeRetriever(results=[_result("a.pdf", "a")])
+    )
+    assert out.result.answer == "sources don't contain this"
+
+
+def test_retrieved_capped_per_turn():
+    from opennote.agents.loop import _MAX_RETRIEVED
+
+    results = [_result(f"f{i}.pdf", f"content {i}") for i in range(30)]
+    calls = [
+        ChatResponse(content="", tool_calls=[ToolCall(id=f"t{i}", name="search", arguments={"query": f"q{i}"})])
+        for i in range(6)
+    ]
+    calls.append(ChatResponse(content="Done [1]."))
+    client = ScriptedClient(calls)
+    out = agent_turn(StubNotebook(), "q", client=client, retriever=FakeRetriever(results=results), max_rounds=8)
+    assert len(out.result.results) <= _MAX_RETRIEVED
+    # Later searches past the cap render an omission notice, not more chunks.
+    assert any("retrieval cap" in str(m.get("content", "")) for m in client.sent[-1]["messages"])
+
+
+def test_tool_content_truncates_giant_chunk():
+    from opennote.agents.loop import _MAX_CHUNK_CHARS, _tool_content
+
+    out = _tool_content("search", [_result("a.pdf", "y" * 9000)])
+    assert "[…truncated…]" in out
+    assert len(out) < 9000
+    assert len(out) > _MAX_CHUNK_CHARS  # tags + notice, not silent drop
+
+
 def test_loop_sums_provider_usage_across_rounds():
     from opennote.chat.client import TokenUsage
 

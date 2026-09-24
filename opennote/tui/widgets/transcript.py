@@ -18,6 +18,9 @@ class Transcript(RichLog):
     """Appends conversation items in opencode's muted/bold text styling."""
 
     def __init__(self, *args, **kwargs) -> None:
+        # Bound scrollback: long sessions otherwise grow memory and slow
+        # every resize re-layout. 2000 lines ≈ hundreds of turns.
+        kwargs.setdefault("max_lines", 2000)
         super().__init__(*args, **kwargs)
         self.markup = False
         self.auto_scroll = True

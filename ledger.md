@@ -478,3 +478,52 @@ Because of L174 the body was fetched and then discarded, so that specific
 consequence never materialised. The **network request still issued from the
 operator's position** - which is the actual boundary crossing - so the lead and
 its fix stand unchanged. Only the content-relay detail was wrong.
+
+## Wave 19 - Measured L175 against real model output (executed)
+
+`scripts/measure_grounding.py` runs real agent turns, records every claim that
+reaches the tier-2 check, and reports the coverage distribution. It changes no
+behaviour -- it wraps `_text_coverage`, `filter_grounded_answer` and
+`validate_freeform_answer` to record their inputs and returns.
+
+**This overturns the Wave 18 conclusion.** The synthetic corpus said 0.6 was
+measurably wrong; real model output says 0.6 is roughly right and the threshold
+should NOT move.
+
+| run | questions | completed | structured | claims | kept | dropped | median cov | min cov |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 5 (kimi.tsv) | 5 | 60% | 6 | 5 | 1 | 0.85 | 0.50 |
+| 2 | 12 (mixed factoid/explanatory/comparative) | 5 (7 x 429) | 60% of 5 | 12 | 12 | 0 | 0.87 | 0.62 |
+
+Combined: **18 claims, 17 kept, 1 dropped (~6%)**, and **no claim fell below 0.5**
+except the single drop. Threshold table on run 2 (n=16 evaluations): 0 drops at
+0.30/0.40/0.50/**0.60**; 3 drops only at 0.70.
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L177 | MED | `validation/citation.py:_content_words` | The only observed false drop was **not** paraphrase. The model wrote the same fact two ways -- "activates 104.2 **billion** parameters" scored 0.50 and was kept; "activates 104.2**B** parameters" scored 0.57 and was **dropped**. Single-letter unit abbreviations are single tokens against a spelled-out word, so the metric penalises abbreviation rather than ungroundedness. | **open - recommended** | Normalise unit abbreviations in `_content_words` (B/billion, T/trillion, M/million, K/k, and similar) so both spellings score alike. Keep the threshold at 0.6 | - |
+| L178 | LOW | `scripts/measure_grounding.py` report | The first version counted failed turns as "answered in prose", inflating the prose rate and understating the structured rate. | **fixed** | Rates now computed over completed turns only, with failures reported separately | - |
+
+**Revised conclusion for L175:** do *not* lower the threshold and do *not*
+implement per-clause scoring. The data does not support either:
+
+- Real claims cluster at median 0.85-0.87 with a mean of 0.84 -- nowhere near the
+  0.40-0.58 band the synthetic corpus suggested. Lowering the bar to 0.30 to
+  "rescue" paraphrases would admit fabrications to fix a problem that real
+  output does not exhibit.
+- Per-clause scoring was motivated by the synthetic overlap. No blended
+  fabrication appeared in either run, so there is no evidence for it.
+- The one real defect is L177, and it is a metric bug with a small, targeted fix.
+
+**The synthetic corpus overstated the risk.** Its 0.40-0.44 "heavy paraphrase"
+and "multi-fact paraphrase" cases were written to probe the boundary, not sampled
+from usage. They are adversarial probes and should be labelled as such; they are
+not a false-drop rate. This is recorded so the next reader does not treat L175 as
+an open product bug.
+
+**Measurement limits, stated plainly:** 18 claims from one document
+(`kimi.pdf`), one model (groq `qwen3.8-27b`), two runs; run 2 lost 7 of 12 turns
+to groq's OTPM rate limit (the L149 issue, unrelated to this work). A model that
+paraphrases more aggressively, or a different corpus, would score lower. Re-run
+`py scripts/measure_grounding.py --notebook <nb> --provider groq` after changing
+`_TEXT_SUPPORT_THRESHOLD` before trusting any future number.

@@ -64,9 +64,22 @@ class AuthConfig:
                 raw = json.load(f)
         except (json.JSONDecodeError, OSError):
             # Never silently destroy a corrupt config: back it up so the next
-            # save() can't overwrite the only surviving copy of the data.
+            # save() can't overwrite the only surviving copy of the data. The
+            # name is timestamped — a fixed name meant a *second* corruption
+            # overwrote the copy this was written to preserve. Same discipline as
+            # transcript.py and context_meter.load_spent.
             if self.path.exists():
-                backup = self.path.with_suffix(".json.corrupt")
+                import time as _time
+
+                stamp = int(_time.time())
+                # Second-resolution stamps collide when two corruptions land in
+                # the same second, which would recreate the very overwrite this
+                # backup exists to prevent. Suffix a counter until free.
+                backup = self.path.with_suffix(f".json.corrupt.{stamp}")
+                n = 1
+                while backup.exists():
+                    n += 1
+                    backup = self.path.with_suffix(f".json.corrupt.{stamp}.{n}")
                 try:
                     import shutil
 

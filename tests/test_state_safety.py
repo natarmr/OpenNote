@@ -38,15 +38,30 @@ def test_corrupt_usage_quarantined(tmp_path):
 
 
 def test_record_spent_write_failure_returns_persisted(tmp_path, monkeypatch):
-    import pathlib
+    """The write goes through fsutil.atomic_write_text, so inject there.
 
+    Patching Path.write_text no longer reaches it — which is the point of the
+    atomic write, but the invariant under test (a failed write must not report an
+    inflated in-memory total) still has to hold.
+    """
+    import opennote.fsutil as fsutil
     from opennote.context_meter import record_spent
 
-    def boom(self, *a, **kw):
+    def boom(path, text, encoding="utf-8"):
         raise OSError("disk down")
 
-    monkeypatch.setattr(pathlib.Path, "write_text", boom)
+    monkeypatch.setattr(fsutil, "atomic_write_text", boom)
     assert record_spent(1.5, tmp_path) == 0.0
+
+
+def test_record_spent_is_atomic(tmp_path):
+    """No partial file is left behind: the write is tmp + os.replace."""
+    from opennote.context_meter import load_spent, record_spent
+
+    assert record_spent(1.5, tmp_path) == 1.5
+    assert record_spent(0.5, tmp_path) == 2.0
+    assert load_spent(tmp_path) == 2.0
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_capabilities_ttl_caches_probe(monkeypatch):

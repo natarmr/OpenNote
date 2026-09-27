@@ -9,7 +9,7 @@ from opennote.chat.client import (
     default_provider,
     get_client,
 )
-from opennote.chat.prompt import SYSTEM_TEMPLATE, build_context, build_user_message
+from opennote.chat.prompt import SYSTEM_TEMPLATE, build_tagged_context, build_user_message
 
 __all__ = [
     "AskResult",
@@ -22,6 +22,6 @@ __all__ = [
     "default_provider",
     "get_client",
     "SYSTEM_TEMPLATE",
-    "build_context",
+    "build_tagged_context",
     "build_user_message",
 ]

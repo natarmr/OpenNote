@@ -40,6 +40,8 @@ class Capabilities:
 
     # --- Plugins ---
     plugins_loaded: List[str] = field(default_factory=list)
+    plugins_allowed: bool = False  # True when OPENNOTE_ALLOW_PLUGINS=1
+    plugins_skipped: List[str] = field(default_factory=list)
 
     # --- Supermemory ---
     supermemory_available: bool = False  # True when SUPERMEMORY_API_KEY is set
@@ -91,13 +93,21 @@ def _probe() -> Capabilities:
     except Exception:
         pass
 
-    # --- Plugins (store plugin names, not tool names) ---
+    # --- Plugins ---
+    # The opt-in check lives in PluginLoader.load(), the one choke point every
+    # caller passes through, so this probe is safe: it loads built-ins only
+    # unless the operator opted in. It still must not become an unconditional
+    # code-execution path — `opennote capabilities` prints the result of this
+    # function, so probing unconditionally would run repository-adjacent .py
+    # files just to answer "what is available?".
     try:
-        from opennote.plugins.loader import PluginLoader, PluginContext
+        from opennote.plugins.loader import PluginContext, PluginLoader, plugins_allowed
 
+        caps.plugins_allowed = plugins_allowed()
         loader = PluginLoader(PluginContext(capabilities=caps))
         loader.load()
         caps.plugins_loaded = sorted(h._name for h in loader.hooks)
+        caps.plugins_skipped = sorted({str(p) for p in loader.skipped})
     except Exception:
         pass
 
@@ -193,6 +203,8 @@ if __name__ == "__main__":  # pragma: no cover
         f"video_available: {caps.video_available}",
         f"skills_available: {caps.skills_available} ({caps.skills_count})",
         f"plugins_loaded: {caps.plugins_loaded}",
+        f"plugins_allowed: {caps.plugins_allowed}",
+        f"plugins_skipped: {caps.plugins_skipped}",
         f"supermemory_available: {caps.supermemory_available}",
         f"skill_scripts_allowed: {caps.skill_scripts_allowed}",
         f"agents_available: {caps.agents_available}",

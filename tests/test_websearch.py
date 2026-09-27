@@ -104,6 +104,171 @@ def test_is_safe_url_allows_public(url):
     assert _is_safe_url(url)
 
 
+# --- Wave 2: host canonicalization (the guard used to fail OPEN here) --------
+
+# Every one of these was ACCEPTED by the pre-Wave-2 guard: the root label defeats
+# both the exact-membership and the suffix tuple, and ipaddress declines the
+# non-canonical numeric forms, which the platform resolver still maps to loopback.
+CANONICALIZATION_BYPASSES = [
+    "http://localhost./",
+    "http://127.0.0.1./",
+    "http://metadata.google.internal./",
+    "http://metadata.aws.internal./",
+    "http://127.1/",
+    "http://0177.0.0.1/",
+    "http://127.0.0.1..:8080/",
+    "http://LOCALHOST./admin",
+]
+
+
+@pytest.mark.parametrize("url", CANONICALIZATION_BYPASSES)
+def test_is_safe_url_rejects_canonicalization_bypasses(url):
+    assert not _is_safe_url(url), url
+
+
+@pytest.mark.parametrize("url", CANONICALIZATION_BYPASSES)
+def test_read_page_rejects_canonicalization_bypasses(url):
+    with pytest.raises(RuntimeError, match="Refusing to fetch"):
+        read_page(url)
+
+
+def test_non_canonical_numeric_host_is_the_fail_closed_branch(monkeypatch):
+    """Pin the premise: ipaddress declines these, so the guard must not pass them."""
+    import ipaddress
+
+    for host in ("127.1", "0177.0.0.1", "127.0.0.1."):
+        with pytest.raises(ValueError):
+            ipaddress.ip_address(host)
+    from opennote.websearch import _is_private_ip
+
+    assert _is_private_ip("127.1") is True
+    assert _is_private_ip("0177.0.0.1") is True
+    # A real hostname is not numeric, so it is settled by the DNS check instead.
+    assert _is_private_ip("example.com") is False
+
+
+def test_host_resolving_private_is_refused(monkeypatch):
+    import socket
+
+    import opennote.websearch as ws
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0))],
+    )
+    assert ws._host_resolves_public("evil.example.com") is False
+
+
+def test_unresolvable_host_is_left_to_the_fetcher(monkeypatch):
+    import socket
+
+    import opennote.websearch as ws
+
+    def boom(*a, **k):
+        raise socket.gaierror("nope")
+
+    monkeypatch.setattr(socket, "getaddrinfo", boom)
+    assert ws._host_resolves_public("example.com") is True
+
+
+# --- Wave 2: the guard is bound to the fetch primitive ----------------------
+
+
+def test_fetch_guarded_rejects_private_url():
+    from opennote.websearch import _fetch_guarded
+
+    with pytest.raises(RuntimeError, match="Refusing to fetch"):
+        _fetch_guarded("http://127.0.0.1/")
+
+
+def test_fetch_guarded_refuses_redirect_into_private_range(monkeypatch):
+    """trafilatura follows redirects inside one urllib3 call, so we walk the chain."""
+    import opennote.websearch as ws
+
+    hops = {"https://public.example/": "http://127.0.0.1:8080/admin"}
+    monkeypatch.setattr(ws, "_next_redirect", lambda url: hops.get(url))
+    monkeypatch.setattr(ws, "_host_resolves_public", lambda host: True)
+    with pytest.raises(RuntimeError, match="Refusing to fetch"):
+        ws._fetch_guarded("https://public.example/")
+
+
+def test_fetch_guarded_follows_a_public_chain(monkeypatch):
+    import opennote.websearch as ws
+
+    hops = {
+        "https://a.example/": "/b",
+        "https://a.example/b": "https://c.example/final",
+        "https://c.example/final": None,
+    }
+    monkeypatch.setattr(ws, "_next_redirect", lambda url: hops.get(url))
+    monkeypatch.setattr(ws, "_host_resolves_public", lambda host: True)
+    assert ws._fetch_guarded("https://a.example/") == "https://c.example/final"
+
+
+def test_fetch_guarded_refuses_non_http_redirect(monkeypatch):
+    import opennote.websearch as ws
+
+    monkeypatch.setattr(ws, "_next_redirect", lambda url: "file:///etc/passwd")
+    monkeypatch.setattr(ws, "_host_resolves_public", lambda host: True)
+    with pytest.raises(RuntimeError, match="non-http"):
+        ws._fetch_guarded("https://a.example/")
+
+
+def test_fetch_guarded_caps_redirect_hops(monkeypatch):
+    import opennote.websearch as ws
+
+    counter = {"n": 0}
+
+    def forever(url):
+        counter["n"] += 1
+        return f"https://a.example/{counter['n']}"
+
+    monkeypatch.setattr(ws, "_next_redirect", forever)
+    monkeypatch.setattr(ws, "_host_resolves_public", lambda host: True)
+    with pytest.raises(RuntimeError, match="Too many redirects"):
+        ws._fetch_guarded("https://a.example/")
+
+
+def test_enrichment_fetch_goes_through_the_guard(monkeypatch):
+    """Lead 4.2: a Tavily `url` field must not reach the fetcher unvalidated."""
+    import opennote.websearch as ws
+
+    fetched = []
+
+    class FakeTrafilatura:
+        @staticmethod
+        def fetch_url(url):
+            fetched.append(url)
+            return None  # force the bare-Tavily fallback so no parsing is needed
+
+    monkeypatch.setattr(ws, "_tavily_search", lambda q, **k: [{"url": "http://127.0.0.1/", "content": "c"}])
+    monkeypatch.setitem(__import__("sys").modules, "trafilatura", FakeTrafilatura)
+    ws.web_search("q")
+    assert fetched == [], "the private URL must be refused before the fetcher is called"
+
+
+def test_enrichment_fetch_of_public_url_is_still_attempted(monkeypatch):
+    import opennote.websearch as ws
+
+    fetched = []
+
+    class FakeTrafilatura:
+        @staticmethod
+        def fetch_url(url):
+            fetched.append(url)
+            return None
+
+    monkeypatch.setattr(
+        ws, "_tavily_search", lambda q, **k: [{"url": "https://example.com/", "content": "c"}]
+    )
+    monkeypatch.setattr(ws, "_next_redirect", lambda url: None)
+    monkeypatch.setattr(ws, "_host_resolves_public", lambda host: True)
+    monkeypatch.setitem(__import__("sys").modules, "trafilatura", FakeTrafilatura)
+    ws.web_search("q")
+    assert fetched == ["https://example.com/"]
+
+
 # --- L48: web citation locator ---------------------------------------------
 
 

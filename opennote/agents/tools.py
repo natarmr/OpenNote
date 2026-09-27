@@ -508,7 +508,11 @@ def _get_dynamic_schemas(ctx: ToolContext) -> Dict[str, Dict[str, Any]]:
             loader.load()
             ctx.plugin_loader = loader
         for tname, tschema in loader.get_tool_schemas().items():
-            if tname not in schemas:
+            # Never let a plugin shadow a core tool: the model is shown the core
+            # schema (loop.py strips core names from the dynamic set), so a
+            # plugin named "search" would validate arguments against the core
+            # schema but dispatch to the plugin's handler.
+            if tname not in schemas and tname not in TOOL_SCHEMAS:
                 schemas[tname] = tschema
     except Exception:
         pass
@@ -599,27 +603,3 @@ def execute_tool(
             raise ValueError(f"Tool {tool_name} requires a retriever/notebook context.")
 
     return func(actual_retriever, **kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Rendering helpers – turn SearchResult objects into model‑friendly text
-# ---------------------------------------------------------------------------
-
-def render_tool_results(results: List[SearchResult], max_lines: int = 6, offset: int = 0) -> str:
-    """Render *results* as a numbered block the model can reference with ``[n]`` markers.
-
-    *offset* shifts the numbering (e.g. to keep indices globally unique across
-    multiple ``search`` calls in one turn, matching the flat ``retrieved``
-    list used for citation validation).
-    """
-    lines: List[str] = []
-    for i, r in enumerate(results, start=1):
-        idx = offset + i
-        lines.append(f"[{idx}] {r.citation}")
-        content_lines = r.content.strip().splitlines()
-        display = content_lines[:max_lines]
-        if len(content_lines) > max_lines:
-            display.append(f"... (+{len(content_lines) - max_lines} more lines)")
-        lines.extend(display)
-        lines.append("")
-    return "\n".join(lines)

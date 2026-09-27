@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -146,7 +147,11 @@ def web_search(query: str, top_k: int = 5) -> List[SearchResult]:
             try:
                 import trafilatura
 
-                downloaded = trafilatura.fetch_url(url)
+                # The url is a third-party response field and the query is
+                # model-chosen, so this hop is unvalidated input — it goes
+                # through the same guard as read_page rather than straight to
+                # the fetcher.
+                downloaded = trafilatura.fetch_url(_fetch_guarded(url))
                 if downloaded:
                     sections = _extract_sections(downloaded)
                     chunks = _chunk_sections(sections, url, title or url, ChunkSpec())
@@ -207,6 +212,18 @@ _PRIVATE_HOSTNAMES = {
     "metadata.aws.internal",
 }
 
+# A host made only of digits and dots is an IP-literal attempt. When ipaddress
+# cannot parse one it is a non-canonical numeric form ("127.1", "0177.0.0.1")
+# that the platform resolver still maps to a private address, so it is refused
+# rather than passed through.
+_NUMERIC_HOST = re.compile(r"^[0-9.]+$")
+
+#: Redirect hops we validate ourselves. trafilatura follows redirects inside a
+#: single urllib3 call (MAX_REDIRECTS=2 in 2.2.0) and never re-checks the host,
+#: so a pre-request string check cannot see where it actually lands.
+_MAX_REDIRECTS = 5
+_FETCH_TIMEOUT = 20.0
+
 
 def _is_private_ip(host: str) -> bool:
     """Return True when *host* is a raw IPv4/IPv6 address on a private range."""
@@ -225,9 +242,11 @@ def _is_private_ip(host: str) -> bool:
         import ipaddress
 
         addr = ipaddress.ip_address(host)
-        return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
     except ValueError:
-        return False
+        # Fail closed on a numeric host we cannot parse (127.1, 0177.0.0.1);
+        # a real hostname is not numeric and is settled by the DNS check.
+        return bool(_NUMERIC_HOST.match(host))
+    return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
 
 
 def _is_safe_url(url: str) -> bool:
@@ -240,7 +259,12 @@ def _is_safe_url(url: str) -> bool:
         return False
     if not parts.hostname:
         return False
-    host = parts.hostname.lower()
+    # Drop the root label: "localhost." and "metadata.google.internal." are
+    # absolute-name spellings of names the membership and suffix tests below
+    # would otherwise miss, and they resolve normally.
+    host = parts.hostname.lower().rstrip(".")
+    if not host:
+        return False
     if host in _PRIVATE_HOSTNAMES:
         return False
     if host.endswith(_PRIVATE_HOST_SUFFIXES):
@@ -249,6 +273,94 @@ def _is_safe_url(url: str) -> bool:
     if "." not in host:
         return False
     return not _is_private_ip(host)
+
+
+def _host_resolves_public(host: str) -> bool:
+    """False when *host* resolves to any private/loopback/link-local address.
+
+    The textual filter above is deliberately best-effort: a public hostname can
+    resolve into a private range. This closes that gap for names we cannot
+    recognise as IP literals. An unresolvable host returns True so the fetcher,
+    not the guard, reports the real network error.
+    """
+    import ipaddress
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (OSError, UnicodeError):
+        return True
+    if not infos:
+        return True
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+            return False
+    return True
+
+
+def _probe_headers() -> Dict[str, str]:
+    """Send the same headers trafilatura would, so a probe is not distinguishable."""
+    try:
+        from trafilatura.downloads import DEFAULT_HEADERS
+
+        return dict(DEFAULT_HEADERS)
+    except Exception:
+        return {}
+
+
+def _next_redirect(url: str) -> Optional[str]:
+    """Return the ``Location`` of *url*'s redirect, or None if it is not one.
+
+    Reads only the status line and headers, then closes the connection, so the
+    body is never transferred here — ``trafilatura`` still does the real fetch.
+    """
+    import httpx
+
+    try:
+        with (
+            httpx.Client(
+                follow_redirects=False, timeout=_FETCH_TIMEOUT, headers=_probe_headers()
+            ) as client,
+            client.stream("GET", url) as response,
+        ):
+            if response.status_code not in (301, 302, 303, 307, 308):
+                return None
+            return response.headers.get("location") or None
+    except Exception as exc:  # noqa: BLE001
+        # The probe and the real fetch share a transport, so a failure here
+        # almost always means the fetch will fail too. Pass the URL through and
+        # let trafilatura surface the error; the host was already validated.
+        logger.debug("redirect probe failed for %s: %s", url, exc)
+        return None
+
+
+def _fetch_guarded(url: str) -> str:
+    """Validate *url* and every redirect hop; return the final URL to fetch.
+
+    This is the single chokepoint both fetch paths go through, so a third
+    ``trafilatura.fetch_url`` cannot appear without inheriting the guard.
+    """
+    from urllib.parse import urljoin
+
+    current = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        if not _is_safe_url(current):
+            raise RuntimeError(f"Refusing to fetch non-public URL: {current}")
+        host = urlparse(current).hostname or ""
+        if not _host_resolves_public(host.rstrip(".")):
+            raise RuntimeError(f"Refusing to fetch URL resolving to a private address: {current}")
+        target = _next_redirect(current)
+        if not target:
+            return current
+        nxt = urljoin(current, target)
+        if not nxt.lower().startswith(("http://", "https://")):
+            raise RuntimeError(f"Refusing to follow non-http(s) redirect: {target}")
+        current = nxt
+    raise RuntimeError(f"Too many redirects while fetching: {url}")
 
 
 # ---------------------------------------------------------------------------
@@ -263,11 +375,11 @@ def read_page(url: str) -> List[SearchResult]:
     as ``web_search`` so the results are SearchResult‑shaped and validate
     against the existing `[n]` marker system.
     """
-    if not _is_safe_url(url):
-        raise RuntimeError(f"Refusing to fetch non-public URL: {url}")
     import trafilatura
 
-    downloaded = trafilatura.fetch_url(url)
+    # The guard lives in the chokepoint, not at this call site, so a future
+    # third fetch path cannot skip it (the L43 asymmetry).
+    downloaded = trafilatura.fetch_url(_fetch_guarded(url))
     if not downloaded:
         raise RuntimeError(f"Failed to fetch URL: {url}")
 

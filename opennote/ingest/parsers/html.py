@@ -117,10 +117,18 @@ class HtmlParser(SourceParser):
 
 
 def parse_url(url: str, spec: ChunkSpec) -> List[DocumentChunk]:
-    """Fetch a URL and return cited chunks from its structure."""
+    """Fetch a URL and return cited chunks from its structure.
+
+    Typing the URL is consent to fetch *that* host, not consent to be redirected
+    onto loopback or link-local, so the hop chain is validated before the fetch.
+    For genuinely local content, download it and ingest the file — ``HtmlParser``
+    handles local ``.html`` without any network egress.
+    """
     import trafilatura
 
-    html = trafilatura.fetch_url(url)
+    from opennote.websearch import _fetch_guarded
+
+    html = trafilatura.fetch_url(_fetch_guarded(url))
     if not html:
         raise RuntimeError(f"Failed to fetch URL: {url}")
 

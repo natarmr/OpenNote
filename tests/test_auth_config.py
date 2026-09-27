@@ -58,9 +58,22 @@ def test_corrupt_file_backed_up(tmp_path):
     path = tmp_path / "auth.json"
     path.write_text("{not json", encoding="utf-8")
     AuthConfig(path=path).providers() == {}
-    backup = tmp_path / "auth.json.corrupt"
-    assert backup.exists(), "corrupt config must be preserved, not overwritten"
-    assert backup.read_text(encoding="utf-8") == "{not json"
+    # Timestamped: a fixed ".corrupt" name meant a *second* corruption overwrote
+    # the copy this backup exists to preserve.
+    backups = list(tmp_path.glob("auth.json.corrupt.*"))
+    assert len(backups) == 1, "corrupt config must be preserved, not overwritten"
+    assert backups[0].read_text(encoding="utf-8") == "{not json"
+
+
+def test_second_corruption_does_not_overwrite_the_first_backup(tmp_path):
+    path = tmp_path / "auth.json"
+    path.write_text("{not json", encoding="utf-8")
+    AuthConfig(path=path).providers()
+    path.write_text("also not json", encoding="utf-8")
+    AuthConfig(path=path).providers()
+    backups = sorted(tmp_path.glob("auth.json.corrupt.*"))
+    assert len(backups) == 2, "each corruption must keep its own copy"
+    assert {b.read_text(encoding="utf-8") for b in backups} == {"{not json", "also not json"}
 
 
 def test_mark_added_sets_timestamp(tmp_path):

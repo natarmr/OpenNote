@@ -1,4 +1,9 @@
-"""Prompt building for grounded Q&A: system template + context block."""
+"""Prompt building for grounded Q&A: system template + context block.
+
+Chunk rendering lives in ``opennote.security.delimit`` — ``build_tagged_context``
+delegates to it so content, citation and the ``page`` attribute are escaped in
+exactly one place.
+"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -83,28 +88,24 @@ def render_system_post() -> str:
     return _render_system_post()
 
 
-def build_context(results: Sequence[SearchResult]) -> str:
-    """Render retrieved chunks as a numbered context block with inline citations."""
-    blocks = []
-    for index, result in enumerate(results, start=1):
-        blocks.append(f"[{index}] {result.citation}\n{result.content.strip()}")
-    return "\n\n".join(blocks)
-
-
 def build_user_message(question: str, context: str) -> str:
     return f"Context:\n{context}\n\nQuestion: {question}"
 
 
 def escape_source_content(text: str) -> str:
-    return text.replace("</source>", "<\\/source>").replace("<source", "<\\source")
+    """Deprecated alias — the implementation now lives in ``security.delimit``."""
+    from opennote.security.delimit import escape_source_content as _escape
+
+    return _escape(text)
 
 
 def build_tagged_context(results: Sequence[SearchResult]) -> str:
+    from opennote.security.delimit import render_source_block
+
     parts = []
     for idx, r in enumerate(results, start=1):
         pages = r.metadata.get("pages") or r.metadata.get("page") or r.metadata.get("page_start") or ""
-        content = escape_source_content(r.content.strip())
-        parts.append(f'<source id="{idx}" page="{pages}">\n[{idx}] {r.citation}\n{content}\n</source>')
+        parts.append(render_source_block(idx, r.citation, r.content, pages))
     return "\n\n".join(parts)
 
 

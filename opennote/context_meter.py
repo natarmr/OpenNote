@@ -204,7 +204,11 @@ def record_spent(amount: float, notebook_dir: Optional[Path] = None) -> float:
     try:
         p = _usage_file(notebook_dir)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"spent": total}), encoding="utf-8")
+        # Atomic, like every other state writer in the tree. The recovery path in
+        # load_spent() exists precisely because a torn write leaves corrupt JSON.
+        from opennote.fsutil import atomic_write_text
+
+        atomic_write_text(p, json.dumps({"spent": total}))
     except Exception as exc:
         # Return what is actually persisted, not an inflated in-memory total.
         logger.debug("usage record failed: %s", exc)

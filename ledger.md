@@ -287,3 +287,136 @@ Wave 12 covered the remaining core: `audio/tts.py`, `video.py`, `websearch.py` (
 | L149 | LOW | groq OTPM rate limit | briefing first attempt 429 (Limit 1000, Requested 513) saved as `LLM error` body | retry-once | Retry → READY 12s; stale error-body artifact deleted | live run |
 | L150 | LOW | data | `kkkk` notebook + Kimi mindmap artifact vanished from `.opennote/` (not code-caused; no delete ran) | re-ran on `notebook-1` | Full 8-kind studio validation redone on `notebook-1`/kimi (373 chunks) | live run |
 Wave 11 dead-code sweep is partial — remaining LOW items are tracked above as **open** and do not affect correctness/latency/website.
+
+## Wave 13 - Security audit run-1 remediation: source-block delimiting (executed)
+
+Remediates the two injection leads that survived the run-1 calibration bar
+(`REPORT.md` §5: no boundary crossed + control not load-bearing). These survive
+on the *opposite* reasoning: `security/scan.py:1` self-documents as "telemetry,
+not a gate", so `<source>` delimiting is the only deterministic data/instruction
+separator, and defeating it reclassifies document bytes as model instructions
+while the model still holds `read_page` / `web_search` / `memory_search`.
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L151 | HIGH | `agents/loop.py:118` + `chat/prompt.py:107` + `chat/context_budget.py:93` | `r.citation` interpolated into the `<source>` block **unescaped** while only `r.content` was escaped. `citations.py:44` builds the locator from a document-authored DOCX/HTML heading (`docx.py:56,87`, `html.py:50,88`), a Tavily `title`/`url` (`citations.py:55`), or supermemory hit metadata - so `</source>` in a heading closed the block early. Deterministic: the renderer emitted its own literal close tag. | **fixed** | New `opennote/security/delimit.py`; all three renderers call `render_source_block`, which escapes content **and** citation, and escapes the `page` attribute | `tests/security/test_source_delimiting.py` (new, 33 cases) |
+| L152 | MED | same three sites + `transcript.py:104` | Delimiter escape was a case-sensitive exact-substring pair, so `</SOURCE>`, `</Source>`, `</source `, `</source\n>`, `< source>` and a bare `</source` (left by truncation) all survived. The same pair was duplicated in 4 places, and `transcript.py:104` escaped only the closer. | **fixed** | One regex, case-insensitive, whitespace/NUL tolerant, with `\b` so `<sources>`/`<sourceful>` prose is not mangled; legacy byte-identical output preserved for the two pinned expectations | `tests/security/test_source_delimiting.py::test_no_live_tag_survives_in_content` (13 spellings) + `test_similar_words_are_not_over_escaped` |
+| L153 | LOW | `chat/context_budget.py:39` vs `:93` | Budget estimate `_block_len` hand-builds the same block format, so it drifts from the real renderer. Not a security issue (estimate only). | **open** | Left as-is: re-syncing it would shift every budget decision | - |
+
+Ordering note (L151/L152): `render_source_block` truncates **then** escapes, so
+exactly the bytes the model sees are the bytes that were scanned. Escaping first
+would let a cut land inside an escape and re-expose the tag - pinned by
+`test_truncation_cannot_re_expose_a_tag`.
+
+`opennote/chat/prompt.py:escape_source_content` is kept as a thin alias because
+`tests/test_chat_prompt.py:20` and `tests/security/test_injection_gate.py:9`
+import it from there.
+
+Still open from run-1: L43-class enrichment SSRF (lead 4.2 + 2.4 + 2.5),
+ungated plugin load (4.1), and the claim-text grounding gap (2.3).
+
+## Wave 14 - Security audit run-1 remediation: SSRF guard bound to the primitive (executed)
+
+Closes validated lead 4.2 (`websearch.enrichment-fetch-bypasses-is-safe-url`) and
+unvalidated leads 2.4 (`is-safe-url-host-encoding-canonicalization-gap`) and 2.5
+(`ssrf-guard-prefetch-only-unbound-redirect`) with a single chokepoint.
+
+Both 2.4 and 2.5 were confirmed empirically before the fix, no sandbox required -
+they are pure-function / library-default facts:
+
+    before:  ACCEPT http://localhost./   ACCEPT http://127.0.0.1./
+             ACCEPT http://metadata.google.internal./   ACCEPT http://127.1/
+             ACCEPT http://0177.0.0.1/
+    after:   reject all five; https://example.com/ still accepted
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L154 | HIGH | `websearch.py:149` (enrichment) | Tavily `url` is a third-party response field read verbatim at `:128` and passed to `trafilatura.fetch_url` with **no** `_is_safe_url`; the only gate was the `enrich_fetches` attempt counter at `:144`. `_is_safe_url` had exactly one production call site (`read_page`). | **fixed** | Both fetch paths now call `_fetch_guarded(url)` | `test_enrichment_fetch_goes_through_the_guard`, `test_enrichment_fetch_of_public_url_is_still_attempted` |
+| L155 | HIGH | `websearch.py:229-230` | `except ValueError: return False` failed **open**. `ipaddress.ip_address` declines `127.1` and `0177.0.0.1`, which the Windows resolver still maps to `127.0.0.1`. The suffix tuple could not match a name with a root label and `_PRIVATE_HOSTNAMES` is exact-membership, so `localhost.` and `metadata.google.internal.` passed too. | **fixed** | Fail closed on a numeric-looking host `ipaddress` cannot parse (`_NUMERIC_HOST`); strip the root label before the membership/suffix tests | `test_is_safe_url_rejects_canonicalization_bypasses` (8 URLs), `test_non_canonical_numeric_host_is_the_fail_closed_branch` |
+| L156 | HIGH | `websearch.py:270` | The guard was a pre-request string check only. trafilatura 2.2.0 `_send_urllib_request` calls `urllib3.PoolManager.request(...)` with `redirect=MAX_REDIRECTS` (**2**), so redirects are followed *inside one call* and `response.geturl()` is only read afterwards - a 302 into loopback is requested before any check could run. The decisive fact is no longer an assumption. | **fixed** | `_fetch_guarded` walks the chain itself (`follow_redirects=False`, headers-only read), validating scheme + host + resolved IP on **every** hop, capped at 5, refusing non-http(s) hops | `test_fetch_guarded_refuses_redirect_into_private_range`, `_follows_a_public_chain`, `_refuses_non_http_redirect`, `_caps_redirect_hops` |
+| L157 | MED | `websearch.py:251` | The textual filter is best-effort by design: a public hostname can resolve into a private range. Nothing checked DNS. | **fixed** | `_host_resolves_public` resolves and rejects any private/loopback/link-local/reserved answer; unresolvable hosts pass through so the fetcher reports the real error | `test_host_resolving_private_is_refused`, `test_unresolvable_host_is_left_to_the_fetcher` |
+| L158 | MED | `ingest/parsers/html.py:123` | `opennote ingest <url>` fetched with no guard at all. Typing the URL is consent to fetch *that* host, not consent to be redirected onto link-local metadata. | **fixed** | Routed through `_fetch_guarded` (lazy import - `websearch` imports this module) | covered by the chokepoint tests |
+| L159 | LOW | `websearch.py` fetch path | A third `trafilatura.fetch_url` could be added and silently skip the guard. | **fixed** | `read_page` no longer checks at the call site; the guard is owned by the primitive only, so there is nothing to forget | - |
+
+**Accepted residual (owner decision, recorded in `engg_choices.md:E19`):** DNS
+rebinding between our `getaddrinfo` and trafilatura's own resolution, plus the
+second-request window (we probe, then trafilatura re-requests the validated final
+URL). Both require a stateful, ephemeral redirect from a live third-party host -
+materially beyond the "web publisher" / "document author" threat model. Pinning
+the resolved IP was considered and rejected as disproportionate for a local tool.
+
+## Wave 15 - Security audit run-1 remediation: grounding binds the claim text (executed)
+
+Unvalidated lead 2.3 (`grounding-binds-quote-span-not-claim-text`). The run-1
+rejection reasoning does **not** transfer here: it rested on
+`validate_freeform_answer` being a self-documented legacy heuristic, but
+`filter_grounded_answer` is a different function whose module docstring promises
+"any claim that doesn't verifiably trace to real source text gets dropped" - a
+promise `validate_claim` did not keep.
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L160 | HIGH | `validation/citation.py:68-75` | `validate_claim` compared **only** `quote_span`. `Claim.text` - the sentence actually rendered to the operator - was never compared to anything. Since the document author writes the text being quoted, any quote from their document scores 1.0, so tier 1 certified that a span was *copied*, not that the claim is *grounded*. | **fixed** | Second required condition: `claim.text` must be carried by the same chunk at `_TEXT_SUPPORT_THRESHOLD=0.6` (content-word coverage, prefix-tolerant) | `test_real_quote_with_arbitrary_claim_text_is_dropped` (the lead verbatim), `test_grounded_claim_text_still_passes` |
+| L161 | MED | `validation/citation.py:87` | `summary` was retained whenever *any* claim survived, so a fabricated overview rode in on one genuine quote and was rendered as part of the grounded answer. | **fixed** | Summary held to the kept claims' own chunk text; dropped (and logged) when unsupported | `test_fabricated_summary_is_dropped_even_when_a_claim_survives`, `test_supported_summary_is_retained` |
+| L162 | LOW | `validation/citation.py` | Sub-threshold drops were silent, so a mis-tuned threshold would look like "the model got worse". | **fixed** | Every text-support and summary drop logs source id, coverage, threshold and an excerpt | - |
+
+This is the **containment layer** for L151/L152: even if a delimiter spelling
+somehow survives, an injected instruction that becomes a `Claim.text` no longer
+reaches the answer. Both waves are load-bearing together.
+
+Known tradeoff, accepted by the owner: genuine paraphrase with different
+vocabulary can score below 0.6 and be dropped. Every drop is logged with its
+coverage so the threshold can be tuned from real traffic - `0.6` is a starting
+point, not a settled value. Matching is prefix-tolerant (`cost`/`costs`) but
+deliberately **not** a stemmer: `strong`/`strength` share only `str`, and a rule
+loose enough to merge those would merge unrelated words too.
+
+## Wave 16 - Security audit run-1 remediation: plugin loading is opt-in (executed)
+
+Validated lead 4.1 (`opennote/plugins/loader.py:exec_module-ungated-plugin-load`).
+Owner decision: **warn once, then require the env var** - the first skipped load
+names the directories and the variable, then fails closed silently.
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L163 | HIGH | `plugins/loader.py:106` `load()` | `_plugin_dirs` maps **every** worktree ancestor to `<ancestor>/.opennote/plugins` (`fsutil.py:68` appends before the `.git` break at `:70-71`), plus `default_home()/plugins`, which is `<cwd>/.opennote/plugins` whenever `OPENNOTE_HOME` is unset - even outside any git repo. Any `.py` there was imported and executed with no operator decision, on TUI mount (`tui/screens/chat.py:416`), on `opennote capabilities` (`capabilities.py:99`), on `opennote artifacts check` (`cli.py:813`), and twice per agent turn (`agents/loop.py:193`, `:211-212`). | **fixed** | `OPENNOTE_ALLOW_PLUGINS` opt-in checked at the single choke point every caller passes through, covering the entry-point branch (`:137-146`) that bypasses `_import_file` entirely. Built-ins exempt (in-repo; supermemory already keyed). Skipped paths recorded on `loader.skipped` + `Capabilities.plugins_skipped` | `test_file_plugin_is_not_executed_without_opt_in`, `test_file_plugin_loads_with_opt_in`, `test_plugins_allowed_reads_the_env_var`, `test_builtin_loads_without_the_opt_in` |
+| L164 | MED | `capabilities.py:41-42` | `Capabilities` had `plugins_loaded` and **no** `plugins_allowed` - the asymmetry with `skill_scripts_allowed` (`:48`). `_probe()` called `loader.load()` unconditionally, so a diagnostic print executed code. | **fixed** | Added `plugins_allowed` + `plugins_skipped`; probe now safe because the gate is inside `load()`; both printed by the `__main__` block | `test_capabilities_reports_plugins_allowed_and_skipped` |
+| L165 | MED | `cli.py:668` | `opennote plugins list` executed every plugin module and only then printed the placement hint at `:673` - post-execution notice, not consent. | **fixed** | Opt-in state and skipped paths printed before the listing | - |
+| L166 | MED | `plugins/loader.py:121`, `capabilities.py:101` | `_import_file` re-raises `BaseException` (`:91-93`) but `load()` caught `Exception`, so a plugin calling `sys.exit()` at import aborted the whole CLI/TUI - contradicting `load()`'s own docstring. Same at `register()`. | **fixed** | `except KeyboardInterrupt: raise` / `except BaseException:` - a plugin cannot abort the process; the operator's Ctrl-C still propagates | `test_plugin_calling_sys_exit_at_import_does_not_abort_the_process`, `test_isolated_module_is_removed_from_sys_modules_on_failure` |
+| L167 | MED | `tests/` | **Zero** coverage for the plugin loader - no test file referenced plugins, so a trust-decision fix here would land with no harness. | **fixed** | New `tests/test_plugins_loader.py` (13 tests): the gate, admission rules, discovery surface, isolation contract, builtin exemption | 13 new |
+
+Owner trust-model note (unchanged from run-1): if executing
+working-tree-adjacent `.opennote/plugins/*.py` is *intended*, close the finding
+against that decision instead of re-auditing it - the opt-in is the mechanism,
+not the argument.
+
+## Wave 17 - run-1 consistency + hardening items (executed)
+
+The cheaper items from `REPORT.md` §5 and §7, plus the dead-code removals that
+would otherwise let the Wave 13/14 gaps reappear.
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L168 | LOW | `agents/loop.py:353-356` | The Gemini fallback's validator verdict was discarded by a **bare `pass`** - dead code that reads like an unfinished thought and invited a re-audit (the run-1 candidate). | **fixed** | Replaced with a `logger.info` + a comment stating the divergence from the no-tool-call branch is deliberate (`engg_choices.md:E22`) | existing fallback tests |
+| L169 | MED | `plugins/builtin/supermemory.py:146-150` | Notebook-scoped `containerTag` was **dead**: it read `result.notebook.name`, but `AskResult` had no `notebook` attribute, so all notebooks shared one container. Surfaced by the run-1 Phase 3 verifier. | **fixed** | Added `AskResult.notebook`, populated at all 3 construction sites; `_notebook_name()` normalises both shapes (`ToolContext.notebook` is a Notebook, `AskResult.notebook` is a string) | - (covered by supermemory tests) |
+| L170 | MED | `context_meter.py:207` | The only non-atomic state write in the tree (`p.write_text`), while its own recovery path exists precisely because a torn write leaves corrupt JSON. | **fixed** | `fsutil.atomic_write_text` (tmp + `os.replace`) | `test_record_spent_write_failure_returns_persisted` (retargeted at the new write path), `test_record_spent_is_atomic` |
+| L171 | MED | `auth/config.py:69` | Corrupt-config backup used a **fixed** `.corrupt` name, so a second corruption overwrote the copy it was written to preserve. | **fixed** | Timestamped name **plus a collision counter** - a bare `int(time.time())` still collides within one second, which the new regression test caught | `test_corrupt_file_backed_up` (retargeted), `test_second_corruption_does_not_overwrite_the_first_backup` |
+| L172 | LOW | `agents/tools.py:511` | A plugin schema could overwrite a core schema for argument validation while `execute_tool` dispatched the plugin handler first - so a plugin named `search` substituted the implementation while the model still saw the core schema. | **fixed** | `_get_dynamic_schemas` skips any name in `TOOL_SCHEMAS`, matching the existing strip at `loop.py:241-242` | `test_plugin_tool_cannot_shadow_a_core_tool` |
+| L173 | LOW | `chat/prompt.py:86-91`, `agents/tools.py:608` | Two **dead** renderers interpolated `r.citation` unescaped: `build_context` (no `<source>` framing at all) and `render_tool_results` (superseded by `_tool_content` after L16). Reachable only from their own tests and the package re-exports. | **fixed** | Deleted, with `__init__` exports and their tests updated. Kept as live booby traps: a renderer with the same shape as the vulnerable ones, one `git blame` from being wired back in | `test_build_tagged_context_wraps_every_chunk_in_source_tags` |
+
+Deliberately **not** changed, with reasons:
+- `context_budget.py:39` `_block_len` hand-builds the block format for its length
+  estimate and now drifts slightly from the real renderer. Re-syncing it would
+  shift every budget decision for a non-security gain (tracked as L153).
+- `context_meter.load_spent`'s quarantine uses `os.rename` to a
+  `usage.corrupt.<ts>.json` name. Unlike `auth/config.py`'s `shutil.copy2`, a
+  rename onto an existing path fails rather than silently overwriting, so the
+  same-second collision cannot lose data there.
+- `SYSTEM_TEMPLATE` / `build_user_message` stay: they are plain concatenation
+  with no delimiter involvement, so they are not booby traps.
+
+Lint: the 3 new files are ruff-clean. The 17 pre-existing touched files go from
+388 to 394 findings, and the delta is entirely `UP006`/`UP045`/`BLE001` in code
+written to match file-local `List[]`/`Optional[]`/`except Exception` style, as
+`AGENTS.md` requires. The four findings that were *not* style-matching (a dead
+import, an alias-import, and two simplifications) were fixed.

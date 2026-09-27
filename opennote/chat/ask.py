@@ -21,6 +21,10 @@ class AskResult:
     provider_id: str = ""
     model: str = ""
     usage: Optional["ContextUsage"] = None  # per-turn context accounting (engg_choices.md:E12)
+    # Notebook this turn belongs to. Consumers that scope per-notebook state read
+    # it from here — notably the supermemory containerTag, which was dead code
+    # because this field did not exist.
+    notebook: str = ""
 
 
 def _single_shot(
@@ -301,6 +305,7 @@ def ask(
                 provider_id=client.provider_id,
                 model=client.model,
                 usage=usage,
+                notebook=getattr(notebook, "name", "") or "",
             )
         # Fall through to single-shot on planner/synthesizer failure
         # (but still use single-shot's retriever.search(question) below).
@@ -316,6 +321,7 @@ def ask(
             answer="I could not find any relevant sources in this notebook.",
             provider_id=client.provider_id,
             model=client.model,
+            notebook=getattr(notebook, "name", "") or "",
         )
 
     answer, system, messages = _single_shot(question, results, notebook, client, max_tokens, context_budget)
@@ -341,4 +347,5 @@ def ask(
         provider_id=client.provider_id,
         model=client.model,
         usage=usage,
+        notebook=getattr(notebook, "name", "") or "",
     )

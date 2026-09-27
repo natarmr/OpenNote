@@ -1,4 +1,13 @@
-"""Plugin loader — discover + import Python plugin modules."""
+"""Plugin loader — discover + import Python plugin modules.
+
+Third-party plugins are **code execution**, and the directories searched here are
+derived from the working tree (``_plugin_dirs`` walks every ancestor up to the git
+root). So loading is opt-in: set ``OPENNOTE_ALLOW_PLUGINS=1``. Without it, file
+plugins and entry-point plugins are skipped and only the in-repo built-ins load.
+
+The sibling execution surface ``run_skill_script`` is gated the same way
+(``OPENNOTE_ALLOW_SKILL_SCRIPTS``), so this closes the asymmetry between them.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +15,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import logging
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +24,19 @@ from typing import Any, Callable, Dict, List, Optional
 from opennote.notebooks import default_home
 
 logger = logging.getLogger("opennote.plugins")
+
+#: Opt-in for file-based and entry-point plugins. Built-ins are exempt: they ship
+#: in-repo and the only one (supermemory) is already gated on its API key.
+PLUGIN_ENV_VAR = "OPENNOTE_ALLOW_PLUGINS"
+
+#: Directories we found plugins in while disabled, so the operator is told once
+#: what is being skipped rather than silently losing their plugins.
+_unavailable_warned: set = set()
+
+
+def plugins_allowed() -> bool:
+    """True when third-party plugin loading has been opted into."""
+    return os.environ.get(PLUGIN_ENV_VAR, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -94,19 +117,60 @@ def _import_file(path: Path, module_name: str):
     return mod
 
 
+def _candidate_plugin_files(pdir: Path) -> List[Path]:
+    """Return the ``.py`` files / package inits *pdir* would execute."""
+    try:
+        if not pdir.is_dir():
+            return []
+        out: List[Path] = []
+        for entry in sorted(pdir.iterdir()):
+            if entry.is_file() and entry.suffix == ".py" and not entry.name.startswith("_"):
+                out.append(entry)
+            elif entry.is_dir() and (entry / "__init__.py").exists():
+                out.append(entry / "__init__.py")
+        return out
+    except OSError as exc:
+        logger.debug("Plugin dir scan failed %s: %s", pdir, exc)
+        return []
+
+
+def _warn_plugins_unavailable(skipped: List[Path]) -> None:
+    """Warn once per directory, not once per file, and not on every capability probe."""
+    dirs = {str(p.parent) for p in skipped}
+    for d in sorted(dirs - _unavailable_warned):
+        _unavailable_warned.add(d)
+        logger.warning(
+            "Skipped plugin(s) in %s: loading repository- and cwd-adjacent Python "
+            "files is code execution, so it is opt-in. Set %s=1 to enable.",
+            d,
+            PLUGIN_ENV_VAR,
+        )
+
+
 class PluginLoader:
-    """Discovers and loads plugins; collects tool registrations and hooks."""
+    """Discovers and loads plugins; isolated failures are logged and skipped."""
 
     def __init__(self, ctx: Optional[PluginContext] = None):
         self.ctx = ctx or PluginContext(logger=logger)
         self.hooks: List[PluginHooks] = []
         self.tools: Dict[str, Dict[str, Any]] = {}  # merged
         self._dispatch: Dict[str, Callable] = {}  # name -> execute fn
+        #: Paths that were found but not loaded because plugins are not opted into.
+        self.skipped: List[Path] = []
 
     def load(self, cwd: Path | None = None) -> "PluginLoader":
-        """Discover and load all plugins; isolated failures are logged and skipped."""
-        # 0. Built-ins first (lowest priority — user plugins override)
+        """Discover and load all plugins; isolated failures are logged and skipped.
+
+        The opt-in check lives here, at the single choke point every caller passes
+        through, so it also covers the entry-point branch below - which bypasses
+        :func:`_import_file` entirely and would otherwise be ungated.
+        """
+        # 0. Built-ins first (lowest priority — user plugins override).
+        #    Exempt from the opt-in: they ship in this repo.
         self._load_builtin()
+        if not plugins_allowed():
+            self._collect_skipped(cwd)
+            return self
         # 1. File-based plugins
         for pdir in _plugin_dirs(cwd):
             if not pdir.is_dir():
@@ -118,7 +182,13 @@ class PluginLoader:
                         try:
                             mod = _import_file(entry, mod_name)
                             self._register_module(mod, entry.stem)
-                        except Exception as exc:
+                        except KeyboardInterrupt:
+                            raise  # the operator's own Ctrl-C, not the plugin's
+                        except BaseException as exc:
+                            # BaseException, not Exception: _import_file re-raises
+                            # BaseException so a plugin calling sys.exit() at import
+                            # is contained here instead of aborting the CLI/TUI —
+                            # which is what load()'s docstring promises.
                             logger.warning("Skipping plugin %s: %s", entry, exc)
                             continue
                     elif entry.is_dir() and (entry / "__init__.py").exists():
@@ -127,7 +197,9 @@ class PluginLoader:
                         try:
                             mod = _import_file(init, mod_name)
                             self._register_module(mod, entry.name)
-                        except Exception as exc:
+                        except KeyboardInterrupt:
+                            raise
+                        except BaseException as exc:
                             logger.warning("Skipping plugin pkg %s: %s", entry, exc)
                             continue
             except OSError as exc:
@@ -140,7 +212,7 @@ class PluginLoader:
             if hasattr(eps, "select"):
                 candidates = eps.select(group="opennote.plugins")
             else:
-                candidates = eps.get("opennote.plugins", [])  # type: ignore[call-arg]
+                candidates = eps.get("opennote.plugins", [])  # type: ignore[arg-type]
             for ep in candidates:
                 try:
                     mod = ep.load()
@@ -161,6 +233,14 @@ class PluginLoader:
             logger.debug("Entry-point discovery failed: %s", exc)
 
         return self
+
+    def _collect_skipped(self, cwd: Path | None = None) -> None:
+        """Record (and warn once about) plugins found but not loaded."""
+        for pdir in _plugin_dirs(cwd):
+            self.skipped.extend(_candidate_plugin_files(pdir))
+        if self.skipped:
+            _warn_plugins_unavailable(self.skipped)
+
 
     def _register_module(self, mod: Any, name: str) -> None:
         """Call the plugin's register() and merge hooks."""
@@ -193,7 +273,11 @@ class PluginLoader:
             if inspect.isawaitable(result):
                 logger.warning("Plugin %s register() returned awaitable — async plugins not supported, skipping", name)
                 return
-        except Exception as exc:
+        except KeyboardInterrupt:
+            # load() promises isolation: a plugin must not be able to abort the
+            # CLI/TUI. Same reasoning as the import-time handler in load().
+            raise
+        except BaseException as exc:
             logger.warning("Plugin %s register() failed: %s", name, exc)
             return
 

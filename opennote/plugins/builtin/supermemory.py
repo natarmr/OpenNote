@@ -27,19 +27,32 @@ def _headers() -> Dict[str, str]:
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
 
+def _notebook_name(obj: Any) -> str:
+    """Notebook name from either a Notebook object or a plain name string.
+
+    ``ToolContext.notebook`` is a Notebook; ``AskResult.notebook`` is its name.
+    Both reach this module, and the old code only understood the first shape.
+    """
+    if not obj:
+        return ""
+    if isinstance(obj, str):
+        return obj.strip()
+    name = getattr(obj, "name", None)
+    return str(name).strip() if name else ""
+
+
 def _container_tag_for(ctx: Any = None) -> str:
     """Derive scoped container tag — notebook-specific if available."""
     if ctx is not None:
         try:
-            nb = getattr(ctx, "notebook", None)
-            if nb and getattr(nb, "name", None):
-                return f"opennote-{nb.name}"
+            name = _notebook_name(getattr(ctx, "notebook", None))
+            if name:
+                return f"opennote-{name}"
         except Exception:
             pass
     tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG")
     if tag:
         return tag
-    # Try notebook on result object (on_turn_complete path)
     return _DEFAULT_CONTAINER
 
 
@@ -143,11 +156,10 @@ def _on_turn_complete(result: Any) -> None:
             return
         if "sources don't contain this" in answer:
             return
+        # Scoped per notebook when the result carries one (AskResult.notebook);
+        # the notebook name takes precedence over SUPERMEMORY_CONTAINER_TAG, and
+        # the env var is the fallback when there is no notebook.
         container_tag = _container_tag_for(result)
-        # If result carries notebook name, prefer scoped tag
-        nb_name = getattr(getattr(result, "notebook", None), "name", None) if hasattr(result, "notebook") else None
-        if nb_name:
-            container_tag = f"opennote-{nb_name}"
 
         payload = {
             "content": f"Q: {question}\nA: {answer}",

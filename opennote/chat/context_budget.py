@@ -14,8 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Sequence
 
-from opennote.chat.prompt import escape_source_content
 from opennote.retrieval.retriever import SearchResult
+from opennote.security.delimit import render_source_block
 
 DEFAULT_BUDGET_CHARS = 12_000
 HEADER_OVERHEAD = 80  # <source> tags + citation line approx
@@ -89,8 +89,9 @@ def build_fitted_tagged_context(fitted: Sequence[FittedItem]) -> str:
             or r.metadata.get("page_start")
             or ""
         )
-        content = escape_source_content(item.content.strip())
-        parts.append(f'<source id="{idx}" page="{pages}">\n[{idx}] {r.citation}\n{content}\n</source>')
+        # item.content is already the fitted slice — the notice lives inside it,
+        # so no truncation here; the shared renderer escapes content and citation.
+        parts.append(render_source_block(idx, r.citation, item.content, pages))
     return "\n\n".join(parts)
 
 

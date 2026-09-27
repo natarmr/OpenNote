@@ -659,17 +659,26 @@ def plugins_cmd(
 ):
     """List installed plugins."""
     from opennote.capabilities import get_capabilities
-    from opennote.plugins.loader import PluginContext, PluginLoader
+    from opennote.plugins.loader import PluginContext, PluginLoader, plugins_allowed
 
     if action == "list":
         caps = get_capabilities()
-        # Trigger loader to populate
+        allowed = plugins_allowed()
+        # State the opt-in *before* loading. Listing plugin names after their
+        # modules have already executed is notice, not consent. Calling load()
+        # here is safe because the gate lives inside it, not here.
+        if not allowed:
+            typer.echo("Third-party plugins are disabled (set OPENNOTE_ALLOW_PLUGINS=1 to enable).")
         loader = PluginLoader(PluginContext(capabilities=caps))
         loader.load()
+        if not allowed and loader.skipped:
+            typer.echo("  Found but not loaded:")
+            for path in sorted({str(p) for p in loader.skipped}):
+                typer.echo(f"    {path}")
+        if not caps.supermemory_available and not allowed:
+            typer.echo("(tip: set SUPERMEMORY_API_KEY to enable the built-in supermemory plugin)")
         if not loader.hooks and not loader.tools:
             typer.echo("No plugins loaded.")
-            if not caps.supermemory_available:
-                typer.echo("(tip: set SUPERMEMORY_API_KEY to enable the built-in supermemory plugin)")
             typer.echo("Place Python plugins in .opennote/plugins/*.py or ~/.opennote/plugins/*.py")
             return
         for h in loader.hooks:

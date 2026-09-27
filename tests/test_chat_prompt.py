@@ -1,4 +1,4 @@
-from opennote.chat.prompt import SYSTEM_TEMPLATE, build_context, build_user_message
+from opennote.chat.prompt import SYSTEM_TEMPLATE, build_tagged_context, build_user_message
 from opennote.retrieval.citations import Citation, citation_for
 from opennote.retrieval.retriever import SearchResult
 
@@ -10,11 +10,18 @@ def _result(filename, content, pages="4-5"):
     )
 
 
-def test_build_context_numbers_and_cites():
+def test_build_tagged_context_numbers_and_cites():
     results = [_result("a.pdf", "alpha"), _result("b.txt", "beta")]
-    context = build_context(results)
+    context = build_tagged_context(results)
     assert "[1] [a.pdf, p.4-5]\nalpha" in context
     assert "[2] [b.txt, p.4-5]\nbeta" in context
+
+
+def test_build_tagged_context_wraps_every_chunk_in_source_tags():
+    context = build_tagged_context([_result("a.pdf", "alpha"), _result("b.pdf", "beta")])
+    assert context.count('<source id="1"') == 1
+    assert context.count('<source id="2"') == 1
+    assert context.count("</source>") == 2
 
 
 def test_build_user_message_includes_question():

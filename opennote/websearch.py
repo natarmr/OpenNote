@@ -158,15 +158,15 @@ def web_search(query: str, top_k: int = 5) -> List[SearchResult]:
                     if chunks:
                         # Use the first chunk's metadata, enriched with Tavily title
                         c = chunks[0]
-                        c.meta["title"] = title
-                        c.meta["fetched_at"] = fetched_at
+                        c.metadata["title"] = title
+                        c.metadata["fetched_at"] = fetched_at
                         # Convert DocumentChunk → SearchResult
                         output.append(
                             SearchResult(
                                 content=c.content,
-                                metadata={**c.meta, "id": c.chunk_id},
+                                metadata={**c.metadata, "id": c.chunk_id},
                                 similarity=1.0,
-                                citation=citation_for(c.meta),
+                                citation=citation_for(c.metadata),
                             )
                         )
                         continue

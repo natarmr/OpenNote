@@ -189,3 +189,94 @@ def test_capabilities_reports_plugins_allowed_and_skipped(tmp_path, monkeypatch)
     caps = Capabilities()
     assert caps.plugins_allowed is False
     assert caps.plugins_skipped == []
+
+
+def test_capability_probe_never_executes_plugin_code(tmp_path, monkeypatch):
+    """`opennote capabilities` is a diagnostic and prints the probe's result.
+
+    Before L164 the probe called load() unconditionally, so printing "what is
+    available?" could run repository-adjacent code as a side effect.
+    """
+    from opennote.capabilities import _probe, clear_cached
+
+    plugin = _write_plugin(tmp_path / "plugins", "probe_evil.py", "raise AssertionError('executed')")
+    monkeypatch.setattr(loader_mod, "_plugin_dirs", lambda cwd=None: [plugin.parent])
+    monkeypatch.delenv("OPENNOTE_ALLOW_PLUGINS", raising=False)
+    clear_cached()
+    try:
+        caps = _probe()
+    finally:
+        clear_cached()
+    assert caps.plugins_allowed is False
+    assert caps.plugins_loaded == [], "no third-party plugin may load while disabled"
+    assert caps.plugins_skipped, "the operator must be told what was skipped"
+    assert not [m for m in sys.modules if "_file_probe_evil_" in m], "probe must not import plugin code"
+
+
+def test_capability_probe_loads_plugins_once_opted_in(tmp_path, monkeypatch):
+    from opennote.capabilities import _probe, clear_cached
+
+    _write_plugin(tmp_path / "plugins", "allowed_ok.py")
+    monkeypatch.setattr(loader_mod, "_plugin_dirs", lambda cwd=None: [tmp_path / "plugins"])
+    monkeypatch.setenv("OPENNOTE_ALLOW_PLUGINS", "1")
+    clear_cached()
+    try:
+        caps = _probe()
+    finally:
+        clear_cached()
+    assert caps.plugins_allowed is True
+    assert "allowed_ok" in caps.plugins_loaded
+    assert caps.plugins_skipped == []
+
+
+# --- `opennote plugins list` must state the opt-in before listing -----------
+
+
+def _cli(monkeypatch):
+    """Invoke the real CLI with a stubbed capability probe (keeps it hermetic)."""
+    from typer.testing import CliRunner
+
+    import opennote.capabilities as caps_mod
+    from opennote.cli import app
+
+    monkeypatch.setattr(caps_mod, "get_capabilities", lambda: caps_mod.Capabilities())
+    return CliRunner().invoke(app, ["plugins", "list"])
+
+
+def test_cli_states_the_optin_before_listing_anything(tmp_path, monkeypatch):
+    """Post-execution notice is not consent, so the gate is announced first."""
+    plugin = _write_plugin(tmp_path / "plugins", "cli_evil.py")
+    monkeypatch.setattr(loader_mod, "_plugin_dirs", lambda cwd=None: [plugin.parent])
+    monkeypatch.delenv("OPENNOTE_ALLOW_PLUGINS", raising=False)
+
+    result = _cli(monkeypatch)
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "OPENNOTE_ALLOW_PLUGINS" in out
+    assert str(plugin) in out, "the skipped file must be named"
+    # The gate message comes before the list of what was withheld.
+    assert out.index("disabled") < out.index("Found but not loaded")
+
+
+def test_cli_does_not_execute_plugin_code_while_disabled(tmp_path, monkeypatch):
+    _write_plugin(tmp_path / "plugins", "cli_evil.py", "raise AssertionError('executed')")
+    monkeypatch.setattr(loader_mod, "_plugin_dirs", lambda cwd=None: [tmp_path / "plugins"])
+    monkeypatch.delenv("OPENNOTE_ALLOW_PLUGINS", raising=False)
+
+    result = _cli(monkeypatch)
+    assert result.exit_code == 0, result.output
+    # The plugin would have raised on import; reaching here at all is the point.
+    assert not [m for m in sys.modules if "_file_cli_evil_" in m]
+    assert "probe_tool" not in result.output
+
+
+def test_cli_lists_plugin_tools_once_opted_in(tmp_path, monkeypatch):
+    _write_plugin(tmp_path / "plugins", "cli_good.py")
+    monkeypatch.setattr(loader_mod, "_plugin_dirs", lambda cwd=None: [tmp_path / "plugins"])
+    monkeypatch.setenv("OPENNOTE_ALLOW_PLUGINS", "1")
+
+    result = _cli(monkeypatch)
+    assert result.exit_code == 0, result.output
+    assert "probe_tool" in result.output
+    assert "disabled" not in result.output
+

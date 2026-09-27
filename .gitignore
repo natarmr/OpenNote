@@ -26,4 +26,11 @@ artifacts/
 # Stray sample documents in the repo root
 /*.pdf
 /injection-test-set.*
+/*.html
 studio_outputs/
+
+# LaTeX sources not yet part of the published docs
+docs/technical-paper.tex
+
+# Security audit run directories (findings + coverage ledgers; target source is never modified)
+/run-*/

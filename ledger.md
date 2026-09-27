@@ -420,3 +420,61 @@ Lint: the 3 new files are ruff-clean. The 17 pre-existing touched files go from
 written to match file-local `List[]`/`Optional[]`/`except Exception` style, as
 `AGENTS.md` requires. The four findings that were *not* style-matching (a dead
 import, an alias-import, and two simplifications) were fixed.
+
+## Wave 18 - Turning the run-1 verification plan into automated guards (executed)
+
+Automates the manual verification that Waves 13-17 left to the operator. All
+offline: no API key, no egress. Loopback-only where a real socket is needed.
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L174 | HIGH | `websearch.py:161,162,167,169` | `c.meta` does not exist on `DocumentChunk` (field is `metadata`). The Tavily **enrichment fetch had therefore never succeeded** - every call raised `AttributeError` at `:161`, was swallowed by the `except Exception` at `:173`, and fell through to the bare Tavily snippet. The only evidence was a `logger.warning` routed to a `NullHandler` under the TUI, so a permanently dead path looked exactly like a working one. | **fixed** | `c.meta` -> `c.metadata` (4 sites) | `test_enrichment_content_reaches_the_result`, `test_enrichment_populates_the_citation_from_the_page` - both fail without the fix |
+| L175 | MED | `validation/citation.py` `_TEXT_SUPPORT_THRESHOLD=0.6` | **Measured: the shipped threshold is wrong.** On a labelled corpus, whole-sentence word coverage cannot separate grounded paraphrase from fabrication - the bands overlap (grounded min 0.40, reject max 0.50). A sweep of 0.20..0.60 shows every setting either drops legitimate paraphrase or admits a fabrication: 0.6 keeps 3/6 grounded, 0.40 keeps 6/6 but admits 2/6. | **open - owner decision** | Not changed unilaterally. Two `xfail(strict=False)` tests record the gap and will report XPASS when fixed; `test_report_coverage_distribution` prints the evidence | `test_no_false_drops_on_grounded_corpus` (xfail), `test_threshold_separates_the_corpora` (xfail) |
+| L176 | LOW | test coverage | The plugin loader, capability probe, `opennote plugins list`, the supermemory container tags, the real ingest parsers' heading provenance, and the web fetch result path had no regression guards for the behaviour introduced in Waves 13-17. | **fixed** | New: `test_supermemory_scoping.py` (10), `test_websearch_fetch.py` (12), `security/test_grounding_calibration.py` (7); extended: `test_plugins_loader.py` (+5), `security/test_source_delimiting.py` (+3); new `loopback_http_server` fixture in `conftest.py` | 615 passed, 2 xfailed |
+
+### L175 - the measured result, and the two options
+
+The grounding validator is a **vocabulary** check, so it cannot distinguish an
+abstractive paraphrase (wholly different words, legitimate) from a fabrication
+that *blends* a real clause with a novel instruction clause (partly grounded,
+illegitimate). Blending averages out to ~0.4-0.5, which is exactly where the
+paraphrases sit.
+
+Evidence from `pytest tests/security/test_grounding_calibration.py -k report -s`:
+
+| metric | t=0.30 | t=0.40 | t=0.60 |
+|---|---|---|---|
+| whole-sentence (shipped) | 6/6 grounded, **2/6 fabrications admitted** | 6/6, **2/6 admitted** | 3/6, 0/6 |
+| per-clause minimum | 5/6 grounded, 0/6 | 5/6, 0/6 | 3/6, 0/6 |
+
+Option A - **per-clause minimum coverage, threshold ~0.30.** Split the claim on
+sentence and conjunction boundaries, require *every* clause to clear the bar. A
+blended fabrication has one clause scoring ~0, so it drops regardless of
+threshold. Yields a 0.25-0.40 safe band where whole-sentence coverage had none.
+Costs: a lower numeric bar, so it is a visible loosening; the remaining 1/6
+failure is a stem artifact (`degrade` vs `degradation`).
+
+Option B - **keep 0.6 whole-sentence** and accept that abstractive paraphrase is
+dropped. Honest and strict, but the measurement says it drops 3 of 6 legitimate
+paraphrases, which users would read as "it refuses to answer about my document".
+
+Not chosen here: a semantic/LLM-based support check. Out of proportion for a
+local tool and unmeasurable offline.
+
+### L175 companion - a boundary worth not rediscovering
+
+An injection that is **verbatim in the chunk being cited** scores 1.0 and is
+kept. That is correct, not a bug: the text genuinely is in the source, so quoting
+it *is* grounded, and a validator that refused to quote the operator's own
+document would be broken. Prompt injection living inside ingested text is the
+**delimiter's** job (E18), not the grounding validator's (E20). Pinned by
+`test_injection_inside_the_cited_chunk_is_grounded_by_design` so it is a recorded
+boundary rather than a future "new finding".
+
+### L174 note - run-1's impact statement needs one correction
+
+Run-1 lead 4.2 claimed the fetched body was "returned to the model" as context.
+Because of L174 the body was fetched and then discarded, so that specific
+consequence never materialised. The **network request still issued from the
+operator's position** - which is the actual boundary crossing - so the lead and
+its fix stand unchanged. Only the content-relay detail was wrong.

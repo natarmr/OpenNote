@@ -134,3 +134,17 @@ Each entry: rationale, defaults, escape hatch, status.
 - **The residual worth knowing:** a False verdict can still pick up a `Sources:` footer, because `used_sources`' `MARKER` also matches the bracket, `【n†` and bare `(n)` forms. So an ungrounded fallback answer can be *presented* as grounded. That is a display-assurance issue, not a security boundary — but it is why the discarded verdict is now logged, so the frequency is observable instead of theoretical.
 - **Not settled here:** if the fallback's False-verdict rate turns out to be high in practice, the right fix is to strengthen the validator (E20's direction), not to start abstaining in this branch.
 - **Status:** implemented (L168). The `pass` is gone; the decision is now written down and observable.
+
+## E23. The calibration corpus is a regression guard, not a benchmark
+- **Rule:** `tests/security/test_grounding_calibration.py` holds a labelled corpus of claims with known-correct verdicts. Grounded paraphrase must survive; fabrication and cross-document contamination must drop. The corpus is **inlined** next to the assertions that use it, so a reviewer sees claim and expectation together when tuning.
+- **Why inlined and not a JSON fixture:** the set is small and its value is reviewability. A claim and the reason it is labelled the way it is belong in the same diff. If it ever outgrows that, a data file is the right move.
+- **Why self-contained fixtures:** the repo's `injection-test-set.*` and `kimi.pdf` are **gitignored and untracked** (`.gitignore:27-28`), so they exist only on this machine. The corpus inlines those sentences as literals and builds DOCX/HTML in `tmp_path`. Nothing new may depend on an untracked file.
+- **What it is not:** the corpus is ~12 claims derived from one synthetic document. It guards the *shape* of a grounding failure; it is not statistically representative of a user's corpus and cannot certify that 0.6 is optimal. Growing it from real notebook chunks is a copy-paste job.
+- **What it found:** the shipped threshold is measurably wrong - see `ledger.md:L175`. Two tests are `xfail(strict=False)` so the gap is recorded and will report XPASS when fixed, rather than being quietly deleted or asserted away.
+- **Status:** implemented (L174-L176). Full suite **615 passed, 2 xfailed**.
+
+## E24. Silent fallbacks are bugs, not graceful degradation
+- **Rule:** where a code path has a fallback, the *result* must distinguish success from fallback, and a test must assert on the result - not on "the preferred path was attempted".
+- **Why:** `web_search`'s enrichment fetch had a fallback to the bare Tavily snippet guarded by `except Exception` plus a `logger.warning`. That logger is routed to a `NullHandler` under the TUI (`cli.py:53`), so the only evidence of failure was invisible in the primary UI. The path was in fact broken for its entire life (`c.meta` on a `DocumentChunk`, `ledger.md:L174`) and nobody noticed, because "answers are slightly thinner" is not a reportable symptom.
+- **How this is applied now:** `test_websearch_fetch.py` asserts that the *fetched page text* reaches the `SearchResult` and the snippet does not, and separately pins the fallback so the two states are distinguishable. A fallback that is intended should be asserted as intended; a fallback that hides a defect should not exist.
+- **Generalisation:** any future `except Exception: <degrade>` around a user-visible feature needs a test that fails when the degradation is permanent, not only when it is absent.

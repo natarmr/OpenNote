@@ -180,7 +180,13 @@ def _multihop(
         tagged_all = build_fitted_tagged_context(_fall)
     else:
         tagged_all = build_tagged_context(all_results)
-    answers_block = "\n\n".join(f"--- Answer {i+1} ---\n{a}" for i, a in enumerate(worker_answers))
+    # A worker is another model, not a source. Framing its reply keeps the
+    # synthesiser from treating it as authoritative, and stops a worker that
+    # relayed injected text from closing a <source> block or passing a citation
+    # off as one (ledger.md L182).
+    from opennote.security.delimit import render_worker_answers
+
+    answers_block = render_worker_answers(worker_answers)
     synth_prompt = render(
         "synthesizer.jinja",
         question=question,

@@ -78,6 +78,27 @@ def _result(content):
     return SearchResult(content=content, metadata=meta, similarity=0.9, citation=citation_for(meta))
 
 
+def test_multihop_handoff_frames_worker_replies():
+    """The synthesiser must receive workers' output as data, not as findings.
+
+    The old handoff was bare `--- Answer N ---` blocks under a "here are the
+    answers you received" framing, so a worker's claim — or text a worker relayed
+    from a document — reached the last model stage as authoritative. The final
+    gate (`validate_freeform_answer`) passes on any valid `[n]` marker, so that
+    mattered (ledger.md L182).
+    """
+    from opennote.security.delimit import render_worker_answers
+
+    out = render_worker_answers(["a worker claim with [1]", "another"])
+    assert "<worker-answer" in out
+    assert "--- Answer" not in out
+    # The template must not reintroduce the trust framing.
+    synth = _read("synthesizer.jinja")
+    assert "Here are the answers you received" not in synth, synth[:400]
+    assert "draft" in synth.lower(), "the template must frame workers as drafts"
+    assert "<worker-answer>" in synth, "the template must name the new tag"
+
+
 def test_every_template_directory_file_is_accounted_for():
     """A new template must be classified here, not silently skipped."""
     on_disk = {p.name for p in TEMPLATE_DIR.glob("*.jinja")}

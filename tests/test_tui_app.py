@@ -70,12 +70,21 @@ async def _make_app(tmp_path, client=None, retriever=None, notebook_name="t"):
     return app
 
 
-async def _wait_idle(pilot, bar, timeout=10.0):
-    """Pause until the prompt bar is idle (worker finished)."""
+async def _wait_idle(pilot, bar, timeout=10.0, settle=3):
+    """Pause until the prompt bar is idle (worker finished).
+
+    Requires ``settle`` consecutive idle polls. A single non-busy poll is
+    premature on paths that never set busy, and asserts on a half-done turn.
+    """
     deadline = time.monotonic() + timeout
+    idle = 0
     while time.monotonic() < deadline:
         await pilot.pause()
-        if not bar.busy:
+        if bar.busy:
+            idle = 0
+            continue
+        idle += 1
+        if idle >= settle:
             return
     raise AssertionError("prompt bar never went idle")
 

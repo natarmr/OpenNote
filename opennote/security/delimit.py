@@ -22,13 +22,33 @@ implementation used and which existing tests pin exactly.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
-#: Any spelling of a ``source`` tag opener/closer: mixed case, and
-#: whitespace/NUL between the ``<``, the ``/``, the name and the ``>``. ``\\b``
-#: keeps ``<sources>`` and ``<sourceful>`` out of scope so ordinary prose is not
-#: mangled. Runs *after* the literal ``</source>`` replacement, which it never
-#: re-matches because the inserted backslash breaks the pattern.
-_VARIANT_OPEN = re.compile(r"<[\s\x00]*/?[\s\x00]*source\b", re.IGNORECASE)
+#: Compiled per tag on first use. ``<source>`` is the document block;
+#: ``<worker-answer>`` frames one model stage's reply handed to the next
+#: (see ``chat/ask.py``). Separate namespaces, so neither can be closed by the
+#: other and a worker's reply cannot masquerade as a citable source.
+_TAG_PATTERNS: dict = {}
+
+
+def _tag_pattern(tag: str) -> re.Pattern:
+    pat = _TAG_PATTERNS.get(tag)
+    if pat is None:
+        # Any spelling of the tag opener/closer: mixed case, and whitespace/NUL
+        # between the ``<``, the ``/``, the name and the ``>``. ``\b`` keeps
+        # ``<sources>`` out of scope. Runs *after* the literal replacement,
+        # which it never re-matches because the inserted backslash breaks it.
+        pat = re.compile(rf"<[\s\x00]*/?[\s\x00]*{re.escape(tag)}\b", re.IGNORECASE)
+        _TAG_PATTERNS[tag] = pat
+    return pat
+
+
+def escape_delimited(text: str, tag: str) -> str:
+    """Return *text* with any ``<tag>``/``</tag>`` spelling defused."""
+    if not text:
+        return text
+    out = text.replace(f"</{tag}>", f"<\\/{tag}>")
+    return _tag_pattern(tag).sub(lambda m: "<\\" + m.group(0)[1:], out)
 
 
 def escape_source_content(text: str) -> str:
@@ -41,15 +61,41 @@ def escape_source_content(text: str) -> str:
     ``</source ``, ``</source\\n>``, ``< source>`` and the bare ``</source`` that
     a truncation cut can leave behind.
     """
-    if not text:
-        return text
-    out = text.replace("</source>", "<\\/source>")
-    return _VARIANT_OPEN.sub(lambda m: "<\\" + m.group(0)[1:], out)
+    return escape_delimited(text, "source")
 
 
 def _escape_attr(value: object) -> str:
     """Escape a value destined for a double-quoted tag attribute."""
     return str(value).replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+
+
+def render_delimited_block(tag: str, attrs: str, body: str) -> str:
+    """Wrap *body* in ``<tag attrs>…</tag>``, defusing any tag inside it.
+
+    The body is escaped before it is wrapped, so a block can never close itself
+    or the block that follows it.
+    """
+    return f"<{tag} {attrs}>\n{escape_delimited(body, tag)}\n</{tag}>"
+
+
+def render_worker_answers(answers: Sequence[str], tag: str = "worker-answer") -> str:
+    """Frame each worker reply as data for the synthesiser.
+
+    A worker is another model, not a source. Its reply is a *draft* that has to
+    be reconciled against the sources, so it gets its own tag namespace: it
+    cannot close a ``<source>`` block, and its ``[n]`` markers cannot be mistaken
+    for citations into the retrieved chunks.
+
+    Two escapes, not one. Defusing only the block's own tag would still let a
+    worker emit ``</source>`` or ``<source id="1">`` and forge a source boundary
+    or a citable-looking chunk inside the synthesiser's prompt.
+    """
+    parts = []
+    for i, answer in enumerate(answers, start=1):
+        body = escape_delimited(answer, "source")
+        body = escape_delimited(body, tag)
+        parts.append(f'<{tag} id="{i}">\n{body}\n</{tag}>')
+    return "\n\n".join(parts)
 
 
 def render_source_block(

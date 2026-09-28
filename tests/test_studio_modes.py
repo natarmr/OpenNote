@@ -167,11 +167,23 @@ def _transcript_text(transcript) -> str:
     return "\n".join("".join(seg.text for seg in strip) for strip in transcript.lines)
 
 
-async def _wait_idle(pilot, bar, timeout=10.0):
+async def _wait_idle(pilot, bar, timeout=10.0, settle=3):
+    """Wait until the prompt bar reports idle *and stays* idle.
+
+    Returning on the first non-busy poll is racy: several paths (``_run_studio``
+    being one) never set busy at all, so the very first poll reports idle while
+    the worker thread is still running and the assertion lands on a half-finished
+    turn. Require ``settle`` consecutive idle polls before believing it.
+    """
     deadline = time.monotonic() + timeout
+    idle = 0
     while time.monotonic() < deadline:
         await pilot.pause()
-        if not bar.busy:
+        if bar.busy:
+            idle = 0
+            continue
+        idle += 1
+        if idle >= settle:
             return
     raise AssertionError("prompt bar never went idle")
 

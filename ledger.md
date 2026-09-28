@@ -556,3 +556,29 @@ unframed handoff between two model stages and deserves its own look.
 Suite: **634 passed** (was 615 + 2 xfailed; the xfails are now real guards).
 New and changed test files are ruff-clean; the four touched source files are
 208 -> 208 findings, all pre-existing house style.
+
+## Wave 21 - Frame the worker handoff; fix the TUI idle race (executed)
+
+The two open items with a concrete mechanism. The other three deferred items
+(`resolve_home` ancestor adoption, `SUPERMEMORY_API_BASE`, E24 fallback tests,
+L153) are untouched -- `resolve_home` needs a trust-model decision first.
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L182 | MED | `chat/ask.py:179`, `security/delimit.py`, `prompt_templates/synthesizer.jinja` | The multihop synthesiser received each worker's raw reply as a bare `--- Answer N ---` block, under the framing "Here are the answers you received for each of your queries." A worker is another *model*, not a source, so that framing promoted its claims to findings. The final gate does not stop it: `ask.py:298` runs `validate_freeform_answer`, which returns True on **any valid `[n]` marker** (`citation.py:102-104`), so one citation admits the whole answer unverified. | **fixed** | Worker replies now render via `render_worker_answers()` into a `<worker-answer>` namespace, defused for **both** its own tag and `source` so a worker cannot forge a source boundary or a citable-looking chunk. Template reframed: replies are "drafts to reconcile", a worker's citation is "not proof the source says it" | `test_worker_answers_are_framed_and_escaped`, `test_worker_reply_cannot_close_its_own_block`, `test_worker_reply_cannot_close_a_source_block`, `test_worker_reply_cannot_smuggle_a_live_source_tag`, `test_delimit_helpers_are_tag_scoped`, `test_multihop_handoff_frames_worker_replies` |
+| L183 | LOW | `_wait_idle` in 4 test files, 15 call sites | The helper returned on the **first** non-busy poll. Several paths never set busy at all -- `test_run_studio_empty_index_posts_failure` calls `_run_studio` directly, bypassing `set_busy` at `chat.py:716` -- so the wait returned immediately and the assertion landed on a half-finished turn. Observed as a real failure earlier in this work, then passing on re-run: the classic flake signature. | **fixed** | Require `settle=3` consecutive idle polls, resetting on any busy observation. Applied to `test_studio_modes`, `test_tui_app`, `test_tui_workers`, `test_use_skill` | Ran the four files 3x consecutively: 91 passed each time |
+
+**Why the double escape matters.** Escaping only the block's own tag would have
+left `<source id="1">` live inside a worker reply -- enough to make a worker
+fabricate a citable chunk in the synthesiser's prompt. The tests for this were
+written before the second escape existed and failed against the first
+implementation, which is the reason it is there.
+
+`escape_delimited(text, tag)` generalises the Wave 13 escape; `escape_source_content`
+is now a one-line wrapper for `tag="source"`, and the two byte-identical
+expectations pinned in `tests/security/test_injection_gate.py` still hold
+(`test_delimit_helpers_are_tag_scoped` re-pins them).
+
+Suite: **641 passed**. `delimit.py` and the new/changed test files are
+ruff-clean; `test_tui_app.py`'s two F401s and two I001s are pre-existing
+(confirmed identical by diffing against a stash).

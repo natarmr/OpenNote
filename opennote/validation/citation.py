@@ -31,10 +31,29 @@ _TEXT_SUPPORT_THRESHOLD = 0.6
 
 _WORD = re.compile(r"[a-z0-9]+")
 
+#: Numeric unit abbreviations the model uses interchangeably with the long form.
+#: Measured case (`ledger.md` L177): the same fact written "activates 104.2
+#: billion parameters" scored 0.50 and was kept, while "activates 104.2B
+#: parameters" scored 0.57 and was *dropped*. A single-letter token loses to a
+#: spelled-out word in the ratio, so the metric was penalising abbreviation
+#: rather than ungroundedness.
+#:
+#: Only the uppercase forms are expanded, and only straight after a digit.
+#: Lowercase single letters are ambiguous (``m`` is metres as often as million,
+#: ``t`` tonnes), and a trailing ``\b`` keeps compound units intact -- ``MPa``
+#: does not match, because ``P`` follows the ``M``.
+_UNIT_NAMES = {"B": "billion", "T": "trillion", "M": "million", "K": "thousand"}
+_NUM_UNIT = re.compile(r"(\d)\s*([BTMK])\b")
+
+
+def _normalize_units(text: str) -> str:
+    """Expand ``104.2B`` to ``104.2 billion`` so both spellings score alike."""
+    return _NUM_UNIT.sub(lambda m: f"{m.group(1)} {_UNIT_NAMES[m.group(2)]}", text or "")
+
 
 def _content_words(text: str) -> set:
     """Lowercase alphanumeric tokens of length > 2 (drops ``the``/``of``/``a``)."""
-    return {w for w in _WORD.findall((text or "").lower()) if len(w) > 2}
+    return {w for w in _WORD.findall(_normalize_units(text).lower()) if len(w) > 2}
 
 
 def _text_coverage(source_text: str, claim_text: str) -> float:
@@ -48,6 +67,10 @@ def _text_coverage(source_text: str, claim_text: str) -> float:
     ``strong`` and ``strength`` share only three leading characters and are treated
     as distinct, because a prefix rule loose enough to merge those would also merge
     unrelated words.
+
+    Unit abbreviations are normalised on **both** sides, so it does not matter
+    whether the chunk or the claim writes ``104.2B`` and which writes
+    ``104.2 billion``.
     """
     claim_words = _content_words(claim_text)
     if not claim_words:

@@ -527,3 +527,32 @@ to groq's OTPM rate limit (the L149 issue, unrelated to this work). A model that
 paraphrases more aggressively, or a different corpus, would score lower. Re-run
 `py scripts/measure_grounding.py --notebook <nb> --provider groq` after changing
 `_TEXT_SUPPORT_THRESHOLD` before trusting any future number.
+
+## Wave 20 - Close out the measurement: fix what it found, correct what it disproved (executed)
+
+Follows Wave 19. Four items; the first two exist because the measurement
+overturned a conclusion the previous commit had baked into a test.
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L177 | MED | `validation/citation.py:_content_words` | The only real false drop the measurement surfaced. The same fact written "activates 104.2 **billion** parameters" scored 0.50 and was kept, while "activates 104.2**B** parameters" scored 0.57 and was **dropped** -- a single-letter token loses to a spelled-out word, so the metric penalised abbreviation rather than ungroundedness. | **fixed** | `_normalize_units` expands a digit-adjacent `B`/`T`/`M`/`K` to its long form, applied to **both** sides of `_text_coverage` so either spelling can abbreviate. Uppercase-only, and the trailing `\b` keeps `MPa` intact; lowercase single letters are ambiguous (`m` is metres as often as million) and are left alone | `test_unit_abbreviations_score_the_same_as_long_form` (0.57 -> 0.75 on the measured pair), `test_unit_normalisation_is_symmetric`, `test_compound_units_are_not_mangled`, `test_unit_normalisation_does_not_loosen_rejection` (fabrications still 0.14 / 0.09) |
+| L181 | MED | `tests/security/test_grounding_calibration.py` | The two committed `xfail` tests asserted "no threshold works" and recommended per-clause scoring. Wave 19 disproved both. A wrong test is worse than no test, and this one would have been read as a pending product bug. | **fixed** | Corpus split into `GROUNDED` (representative, must survive) and `ADVERSARIAL_PARAPHRASE` (probe-only, currently dropped, **accepted**). Both xfails deleted and replaced with three passing guards | `test_representative_claims_survive`, `test_adversarial_paraphrase_is_currently_dropped`, `test_representative_and_reject_bands_do_not_meet` |
+| L179 | MED | `prompt_templates/worker.jinja`, `synthesizer.jinja` | The multihop path carried **no** "data not instructions" rule. `security/scan.py` is telemetry, not a gate, so the delimiter plus an explicit instruction is the whole defense -- and the instruction half was missing from exactly the two templates that consume retrieved text. Mitigating: the chunks *are* `<source>`-tagged there (`ask.py:140,143,176,178`), so Wave 13's escaping applied. | **fixed** | Ported the `ask_post.jinja` reminder into both, worded for their role | `tests/security/test_prompt_injection_rule.py` enumerates the templates, so a fifth cannot be added without the rule; also asserts `ask_system.jinja` is correctly *excluded* (it receives no retrieved text) |
+| L180 | MED | `agents/loop.py:413`, `chat/ask.py:AskResult`, `tui/screens/chat.py:on_turn_result` | A partial grounding drop was **silent**: `loop.py:405-408` renders only surviving claims, and the sole trace was a `logger.info` on a logger the TUI pins to `WARNING`. The user saw a confident, incomplete answer with no signal. Measured: 1 of 18 claims vanished this way. | **fixed** | `AskResult.dropped_claims` carries the count out; the TUI shows `N claim(s) omitted -- not sufficiently supported by the cited source.` as a transcript info line, mirroring the existing "Skill applied:" line. Answer text stays clean, per the owner's choice. CLI `ask` is unaffected -- it uses `validate_freeform_answer` and never drops | `tests/test_tui_grounding_notice.py` (4, headless, no idle-polling), `test_grounded_answer_reports_dropped_claim_count`, `test_grounded_answer_reports_no_drops_when_all_claims_survive`, `test_askresult_dropped_claims_defaults_to_zero` |
+
+**Wave 20 item 3 was not run.** The planned live re-measure
+(`scripts/measure_grounding.py`) was started and then cancelled. The offline
+controls stand in: the measured pair moved 0.57 -> 0.75, and rejection is
+unchanged at 0.14 / 0.09. Because the normaliser is uppercase-only and applies
+symmetrically to both sides, it can only widen coverage on numeric-unit tokens,
+never narrow it -- so the offline evidence is sufficient for this specific
+change. Re-run the harness before making any *future* threshold change.
+
+**Noted, not fixed:** `chat/ask.py:179` hands the synthesizer each worker's raw
+model output as unframed `--- Answer N ---` blocks. That is a model-output
+channel rather than a document channel, so the risk is weaker, but it is an
+unframed handoff between two model stages and deserves its own look.
+
+Suite: **634 passed** (was 615 + 2 xfailed; the xfails are now real guards).
+New and changed test files are ruff-clean; the four touched source files are
+208 -> 208 findings, all pre-existing house style.

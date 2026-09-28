@@ -186,6 +186,9 @@ def agent_turn(
     final_answer = ""
     rounds_used = 0
     saw_empty_reply = False
+    # Claims the grounding validator removed. Only the survivors are rendered, so
+    # the count travels out on AskResult for the TUI to surface (ledger L180).
+    dropped_claims = 0
     # Summed provider usage across rounds (opencode-style session totals).
     from opennote.chat.client import TokenUsage as _TU
 
@@ -408,6 +411,7 @@ def agent_turn(
                             continue
                     ans = GroundedAnswer(claims=claims, summary=tc.arguments.get("summary"))
                     filtered, kept, dropped = filter_grounded_answer(ans, chunk_map)
+                    dropped_claims = len(dropped)
                     if dropped:
                         logger.info("Dropped %d ungrounded claims at validator gate", len(dropped))
                     if not kept:
@@ -539,6 +543,7 @@ def agent_turn(
         provider_id=client.provider_id,
         model=client.model,
         notebook=getattr(notebook, "name", "") or "",
+        dropped_claims=dropped_claims,
     )
     messages.append({"role": "assistant", "content": answer})
 

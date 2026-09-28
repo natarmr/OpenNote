@@ -34,7 +34,7 @@ logger = logging.getLogger("opennote.tui.chat")
 
 
 class TurnResult(Message):
-    def __init__(self, question: str, answer: str, provider_id: str, model: str, usage=None, skill: Optional[str] = None) -> None:
+    def __init__(self, question: str, answer: str, provider_id: str, model: str, usage=None, skill: Optional[str] = None, dropped_claims: int = 0) -> None:
         super().__init__()
         self.question = question
         self.answer = answer
@@ -42,6 +42,10 @@ class TurnResult(Message):
         self.model = model
         self.usage = usage
         self.skill = skill
+        # Claims the grounding validator removed; only survivors are rendered
+        # (ledger L180). Surfaced as an info line so an incomplete answer is not
+        # indistinguishable from a complete one.
+        self.dropped_claims = dropped_claims
 
 
 class TurnFailed(Message):
@@ -626,7 +630,7 @@ class ChatScreen(Screen):
         result: AskResult = agent.result
         self.app.call_from_thread(
             self.post_message,
-            TurnResult(question, result.answer, result.provider_id, result.model, getattr(result, "usage", None), skill_name or None),
+            TurnResult(question, result.answer, result.provider_id, result.model, getattr(result, "usage", None), skill_name or None, getattr(result, "dropped_claims", 0) or 0),
         )
 
     def _start_search(self, question: str) -> None:
@@ -930,6 +934,15 @@ class ChatScreen(Screen):
         if skill:
             self.transcript.add_info(f"Skill applied: {skill}")
         self.transcript.add_answer(msg.answer)
+        # The validator drops claims it cannot tie to the source; only survivors
+        # are rendered. Say so, rather than letting a filtered answer read as a
+        # complete one (ledger L180).
+        dropped = getattr(msg, "dropped_claims", 0) or 0
+        if dropped:
+            plural = "" if dropped == 1 else "s"
+            self.transcript.add_info(
+                f"{dropped} claim{plural} omitted — not sufficiently supported by the cited source."
+            )
         # Sync the render cursor to storage so a remount does not re-append
         # the echo + this answer (both now sit in transcript.json).
         try:

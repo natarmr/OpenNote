@@ -25,6 +25,10 @@ class AskResult:
     # it from here — notably the supermemory containerTag, which was dead code
     # because this field did not exist.
     notebook: str = ""
+    # Claims the grounding validator removed because the sentence was not carried
+    # by the chunk it cited. The answer renders only the survivors, so without
+    # this the user cannot tell an incomplete answer from a complete one.
+    dropped_claims: int = 0
 
 
 def _single_shot(

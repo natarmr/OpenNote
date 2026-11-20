@@ -381,6 +381,252 @@ def _run_skill_script_execute(ctx: ToolContext, skill: str, script: str, args: O
 # Task tool (subagents)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Education tools (learner model, active recall, assessment)
+# ---------------------------------------------------------------------------
+
+def _learning_dir_from_ctx(ctx: ToolContext):
+    """Resolve the notebook's learning directory, or raise a clear error."""
+    nb = ctx.notebook
+    directory = getattr(nb, "directory", None)
+    if directory is None:
+        raise ValueError("This tool requires a notebook context.")
+    from pathlib import Path
+
+    return Path(directory)
+
+
+_EDUCATION_SCHEMAS: Dict[str, dict] = {
+    "learner_profile": {
+        "description": (
+            "Show the learner model for this notebook: goals, mastered and "
+            "struggling concepts, preferred depth, and notes."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    "update_learner": {
+        "description": (
+            "Update the learner model: record newly mastered or struggling "
+            "concepts, clear a struggling concept, add a goal, set preferred "
+            "depth (shallow|medium|deep), or append a note. Call this when the "
+            "learner demonstrates understanding or confusion."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "add_mastered": {"type": "array", "items": {"type": "string"}},
+                "add_struggling": {"type": "array", "items": {"type": "string"}},
+                "clear_struggling": {"type": "array", "items": {"type": "string"}},
+                "add_goal": {"type": "string"},
+                "preferred_depth": {"type": "string", "enum": ["shallow", "medium", "deep"]},
+                "note": {"type": "string"},
+            },
+            "required": [],
+        },
+    },
+    "add_card": {
+        "description": (
+            "Create an active-recall flashcard grounded in the sources. "
+            "Use source_ids like ['1','2'] matching [n] citations. "
+            "Cards are deduplicated by question text."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "The recall question."},
+                "answer": {"type": "string", "description": "A concise grounded answer."},
+                "source_ids": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["question", "answer"],
+        },
+    },
+    "due_cards": {
+        "description": "List flashcards currently due for review (newest due first).",
+        "parameters": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 5}},
+            "required": [],
+        },
+    },
+    "review_card": {
+        "description": (
+            "Grade a flashcard review 0-5. <3 means a lapse (reschedule soon); "
+            ">=3 advances the spaced-repetition interval. Returns the rescheduled card."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "card_id": {"type": "string"},
+                "quality": {"type": "integer", "description": "Grade 0-5."},
+            },
+            "required": ["card_id", "quality"],
+        },
+    },
+    "generate_quiz": {
+        "description": (
+            "Build active-recall flashcards from the notebook on a topic. "
+            "Retrieves grounded context, generates quiz questions, and saves them "
+            "as cards. Returns the created cards."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "description": "What to quiz on."},
+                "count": {"type": "integer", "default": 5},
+            },
+            "required": ["topic"],
+        },
+    },
+    "assess_writing": {
+        "description": (
+            "Grade the learner's written answer to a question against the sources. "
+            "Returns verified claims, unsupported claims, and teaching feedback."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string"},
+                "submission": {"type": "string", "description": "The learner's answer."},
+            },
+            "required": ["question", "submission"],
+        },
+    },
+    "list_notebooks": {
+        "description": (
+            "List all notebooks available in this project with their source "
+            "counts. Use for course/curriculum planning across topics."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
+
+def _edu_learner_profile(ctx: ToolContext):
+    from opennote.learning import load_learner
+
+    m = load_learner(_learning_dir_from_ctx(ctx))
+    return {
+        "goals": m.goals,
+        "mastered": m.mastered,
+        "struggling": m.struggling,
+        "preferred_depth": m.preferred_depth,
+        "notes": m.notes,
+    }
+
+
+def _edu_update_learner(ctx: ToolContext, **kwargs):
+    from opennote.learning import update_learner
+
+    allowed = {"add_mastered", "add_struggling", "clear_struggling", "add_goal", "preferred_depth", "note"}
+    clean = {k: v for k, v in kwargs.items() if k in allowed}
+    m = update_learner(_learning_dir_from_ctx(ctx), **clean)
+    return {"ok": True, "mastered": m.mastered, "struggling": m.struggling}
+
+
+def _edu_add_card(ctx: ToolContext, question: str, answer: str, source_ids=None):
+    from opennote.learning import add_card
+
+    card = add_card(
+        _learning_dir_from_ctx(ctx),
+        question=question,
+        answer=answer,
+        source_ids=source_ids or [],
+    )
+    return {"id": card.id, "question": card.question, "due_ts": card.due_ts}
+
+
+def _edu_due_cards(ctx: ToolContext, limit=5):
+    from opennote.learning import due_cards
+
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 5
+    cards = due_cards(_learning_dir_from_ctx(ctx), limit=max(1, min(limit, 25)))
+    return [
+        {
+            "id": c.id,
+            "question": c.question,
+            "source_ids": c.source_ids,
+            "repetitions": c.repetitions,
+        }
+        for c in cards
+    ]
+
+
+def _edu_review_card(ctx: ToolContext, card_id: str, quality: int):
+    from opennote.learning import review_card
+
+    card = review_card(_learning_dir_from_ctx(ctx), str(card_id), int(quality))
+    if card is None:
+        return {"ok": False, "error": f"card '{card_id}' not found"}
+    return {
+        "ok": True,
+        "id": card.id,
+        "interval_days": card.interval_days,
+        "due_ts": card.due_ts,
+        "ease": card.ease,
+    }
+
+
+def _edu_retrieve_for(ctx: ToolContext, query: str, top_k: int = 8):
+    retriever = _resolve_retriever(ctx)
+    if retriever is None:
+        raise ValueError("This tool requires a retriever.")
+    return retriever.search(query, top_k=top_k)
+
+
+def _edu_generate_quiz(ctx: ToolContext, topic: str, count=5):
+    from opennote.education import generate_quiz_cards
+
+    client = ctx.client
+    if client is None:
+        raise ValueError("Quiz generation requires an LLM client.")
+    results = _edu_retrieve_for(ctx, topic, top_k=8)
+    cards = generate_quiz_cards(
+        topic, results, _learning_dir_from_ctx(ctx), client, count=int(count)
+    )
+    return {"created": len(cards), "cards": cards}
+
+
+def _edu_assess_writing(ctx: ToolContext, question: str, submission: str):
+    from opennote.education import assess_writing
+
+    client = ctx.client
+    if client is None:
+        raise ValueError("Assessment requires an LLM client.")
+    results = _edu_retrieve_for(ctx, question, top_k=8)
+    return assess_writing(question, submission, results, _learning_dir_from_ctx(ctx), client)
+
+
+def _edu_list_notebooks(ctx: ToolContext):
+    from opennote.notebooks import NotebookManager, resolve_home
+
+    manager = NotebookManager(home=resolve_home())
+    notebooks = []
+    for nb in manager.list():
+        notebooks.append(
+            {
+                "name": getattr(nb, "name", ""),
+                "sources": list(getattr(nb, "sources", []) or []),
+                "source_count": len(getattr(nb, "sources", []) or []),
+            }
+        )
+    return {"notebooks": notebooks}
+
+
+_EDU_DISPATCH: Dict[str, Any] = {
+    "learner_profile": _edu_learner_profile,
+    "update_learner": _edu_update_learner,
+    "add_card": _edu_add_card,
+    "due_cards": _edu_due_cards,
+    "review_card": _edu_review_card,
+    "generate_quiz": _edu_generate_quiz,
+    "assess_writing": _edu_assess_writing,
+    "list_notebooks": _edu_list_notebooks,
+}
+
+
 def _build_task_schema(agent_registry: Any) -> Dict[str, Any]:
     desc = "Delegate a sub-task to a specialized subagent. The subagent runs its own retrieval loop and returns its answer."
     if agent_registry is not None:
@@ -485,6 +731,7 @@ _CTX_DISPATCH: Dict[str, Any] = {
     "skill": _skill_execute,
     "run_skill_script": _run_skill_script_execute,
     "task": _task_execute,
+    **_EDU_DISPATCH,
 }
 
 
@@ -508,6 +755,9 @@ def _get_dynamic_schemas(ctx: ToolContext) -> Dict[str, Dict[str, Any]]:
     # run_skill_script — only when allowed (strip spaces like _env_bool)
     if os.environ.get("OPENNOTE_ALLOW_SKILL_SCRIPTS", "").strip().lower() in ("1", "true", "yes", "on"):
         schemas["run_skill_script"] = _build_run_skill_script_schema()
+
+    # Education tools — always available (local-only, no API key needed).
+    schemas.update(_EDUCATION_SCHEMAS)
 
     # Task tool — when agent registry has subagents and depth allows
     if ctx.depth < _MAX_TASK_DEPTH:

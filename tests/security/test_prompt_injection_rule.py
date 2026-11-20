@@ -44,6 +44,9 @@ CONSUMES_RETRIEVED = [
     "studio_timeline.jinja",
     "studio_summary.jinja",
     "studio_questions.jinja",
+    # Education generators (quiz + formative assessment) receive retrieved text.
+    "edu_quiz.jinja",
+    "edu_assess.jinja",
 ]
 
 #: Deliberately permissive: the phrasing differs per template, so match on the

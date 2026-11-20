@@ -60,12 +60,32 @@ opennote artifacts check -n <name> --topic "<t>"         # live self-check: gene
 # TUI tip: pasting a https://… URL at the “API key” prompt for /connect is handled as an endpoint, not a key
 ```
 
-In the TUI (`opennote`), `Tab` cycles `ask → search → studio`:
+In the TUI (`opennote`), `Tab` cycles `ask → search → studio → tutor → socratic → curriculum`.
+The last three are built-in education agents — selecting one arms it automatically, and
+they work globally (no per-notebook or per-directory setup). Use `/reset-agent` to go back
+to `ask`.
 `/mindmap /study /faq /briefing /timeline /suggest /audio /video` generate,
 `/open` views artifacts (mind-maps as a tree, others as Markdown; `artifacts show --tree` on CLI),
 `/use <skill> <task>` applies an installed skill for the next answer,
 `/model /theme /context /skills /skill /plugins /agents /agent /capabilities` manage the session
 (`Tab` autocomplete, `Ctrl+P` palette, `/snake` waiting-room game).
+
+## Learning tools (active recall & tutoring)
+
+Four built-in education agents — `socratic`, `tutor`, `curriculum` — are available
+alongside `ask`. Select one in the TUI with `/agent <name>` (reset with
+`/reset-agent`) or from the CLI with `--agent`/the `learn` command group:
+
+```bash
+opennote learn profile -n my_notebook                 # learner model (goals, mastered, struggling)
+opennote learn quiz "transformer attention" -n my_notebook   # generate flashcards from sources
+opennote learn review -n my_notebook                  # cards due for review
+opennote learn grade <card-id> 4 -n my_notebook       # grade 0-5; reschedules via SM-2
+opennote learn assess "What is BM25?" "It ranks by TF-IDF" -n my_notebook
+opennote learn plan -n my_notebook                    # study plan across notebooks
+```
+
+All state is local JSON under `<notebook>/learning/` and never leaves your machine.
 
 ## 15-minute checklist
 

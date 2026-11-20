@@ -24,9 +24,29 @@ from opennote.tui.commands import Command, matches_prefix
 from opennote.tui.widgets.command_popup import CommandPopup
 
 #: Modes the Tab key cycles through, in order.
-MODES = ("ask", "search", "studio")
+#: The last three are the built-in education agents — selecting one as a mode
+#: arms the matching agent for the next ask turn (see ChatScreen._set_mode), so
+#: all capabilities are reachable with just Tab, not only via /agent.
+MODES = ("ask", "search", "studio", "tutor", "socratic", "curriculum")
 
-MODE_LABELS = {"ask": "Ask", "search": "Search", "studio": "Studio"}
+MODE_LABELS = {
+    "ask": "Ask",
+    "search": "Search",
+    "studio": "Studio",
+    "tutor": "Tutor",
+    "socratic": "Socratic",
+    "curriculum": "Curriculum",
+}
+
+#: Which built-in agent each mode arms (empty for the three utility modes).
+MODE_AGENTS = {
+    "ask": None,
+    "search": None,
+    "studio": None,
+    "tutor": "tutor",
+    "socratic": "socratic",
+    "curriculum": "curriculum",
+}
 
 
 def _short_model(model: str, limit: int = 24) -> str:
@@ -147,7 +167,14 @@ class PromptBar(Widget):
         label = self.query_one("#meta-mode", Label)
         label.update(MODE_LABELS.get(mode, mode))
         vars_ = self.app.get_css_variables()  # type: ignore[attr-defined]
-        mode_colors = {"ask": "primary", "search": "secondary", "studio": "accent"}
+        mode_colors = {
+            "ask": "primary",
+            "search": "secondary",
+            "studio": "accent",
+            "tutor": "success",
+            "socratic": "warning",
+            "curriculum": "error",
+        }
         mode_color = vars_.get(mode_colors.get(mode, "primary"), "")
         label.styles.color = mode_color
         self.query_one("#prompt-box").styles.border_left = ("round", mode_color)

@@ -32,6 +32,8 @@ def get_manager() -> NotebookManager:
     """
     return NotebookManager(home=resolve_home())
 app.add_typer(auth_app, name="auth")
+learn_app = typer.Typer(help="Learning tools: active recall, learner model, and assessment.")
+app.add_typer(learn_app, name="learn")
 
 def _configure_cli_logging() -> None:
     if logging.getLogger().handlers:
@@ -121,6 +123,7 @@ def _notebook(name: Optional[str], create_if_missing: bool = False) -> Notebook:
 @app.command("config")
 def config_cmd(
     show_path: bool = typer.Option(False, "--path", help="Print config file locations."),
+    effective: bool = typer.Option(False, "--effective", help="Show effective providers, keys and default."),
 ) -> None:
     """Show the resolved opennote.json configuration (or its file locations)."""
     from opennote.config import config_paths, load_config, project_config_path
@@ -132,6 +135,39 @@ def config_cmd(
             typer.echo(f"  {'[x]' if p.is_file() else '[ ]'} {p}")
         return
     import json
+
+    if effective:
+        from opennote.auth.config import AuthConfig
+        from opennote.auth.keychain import last_backend_error, mask_key, resolve_key, resolve_key_source
+        from opennote.auth.registry import all_providers
+        from opennote.auth.resolve import resolve_selection
+
+        auth = AuthConfig()
+        typer.echo("Effective configuration")
+        typer.echo("----------------------")
+        try:
+            sel = resolve_selection()
+            typer.echo(f"Default: {sel.label}  (source: {sel.source})")
+        except Exception as e:
+            typer.echo(f"Default: unresolved ({e})")
+        err = last_backend_error()
+        if err:
+            typer.echo(f"Keychain: ERROR - {err}")
+        typer.echo("Providers:")
+        for p in all_providers():
+            settings = auth.get(p.id)
+            key = resolve_key(p.id)
+            src = resolve_key_source(p.id) if key else "none"
+            parts = [
+                f"  {p.id:<12}",
+                f"key={mask_key(key) if key else '-':<14}",
+                f"source={src:<22}",
+                f"model={(settings.model if settings else '-') or '-':<32}",
+            ]
+            if settings and settings.base_url_override:
+                parts.append(f"endpoint={settings.base_url_override}")
+            typer.echo(" ".join(parts))
+        return
 
     typer.echo(json.dumps(load_config().to_dict(), indent=2))
 
@@ -394,8 +430,18 @@ def chat_cmd(
         typer.echo(f"Started notebook '{nb.name}'.")
 
     try:
-        pid = provider or default_provider()
-        client = get_client(pid)
+        # Honor the legacy default_provider hook (tests/overrides) when no
+        # explicit flag is given; the full resolver handles explicit switches.
+        if provider:
+            from opennote.auth.resolve import resolve_selection, set_last_used
+
+            sel = resolve_selection(provider=provider, notebook=nb)
+            pid = sel.provider
+            client = get_client(pid, model=sel.model)
+            set_last_used(pid, sel.model or getattr(client, "model", None))
+        else:
+            pid = default_provider()
+            client = get_client(pid)
     except (ChatError, ValueError) as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -917,6 +963,136 @@ def artifacts_cmd(
     else:
         typer.echo(f"Unknown format '{format}'. Use: json", err=True)
         raise typer.Exit(1)
+
+
+def _learning_client(provider: Optional[str]):
+    from opennote.chat.client import get_client
+
+    from opennote.auth.resolve import resolve_selection
+
+    return get_client(resolve_selection(provider=provider).provider)
+
+
+@learn_app.command("profile")
+def learn_profile(
+    notebook: Optional[str] = typer.Option(None, "--notebook", "-n"),
+):
+    """Show the learner model for a notebook."""
+    nb = _notebook(notebook)
+    from opennote.learning import load_learner
+
+    m = load_learner(nb.directory)
+    if not (m.goals or m.mastered or m.struggling or m.notes):
+        typer.echo("No learner profile yet. Use '/agent tutor' or 'opennote ask' with the tutor.")
+        return
+    typer.echo("Learner profile")
+    typer.echo(f"  Goals: {', '.join(m.goals) or '-'}")
+    typer.echo(f"  Mastered: {', '.join(m.mastered) or '-'}")
+    typer.echo(f"  Struggling: {', '.join(m.struggling) or '-'}")
+    typer.echo(f"  Preferred depth: {m.preferred_depth}")
+    if m.notes:
+        typer.echo(f"  Notes: {m.notes}")
+
+
+@learn_app.command("quiz")
+def learn_quiz(
+    topic: str = typer.Argument(..., help="What to quiz on."),
+    notebook: Optional[str] = typer.Option(None, "--notebook", "-n"),
+    provider: Optional[str] = typer.Option(None, "--provider", "-p"),
+    count: int = typer.Option(5, "--count", "-c"),
+):
+    """Generate active-recall flashcards from the sources."""
+    nb = _notebook(notebook)
+    from opennote.education import generate_quiz_cards
+    from opennote.retrieval.retriever import Retriever
+
+    client = _learning_client(provider)
+    results = Retriever(nb).search(topic, top_k=8)
+    cards = generate_quiz_cards(topic, results, nb.directory, client, count=count)
+    if not cards:
+        typer.echo("No cards could be generated (check sources / provider).", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Created {len(cards)} card(s):")
+    for c in cards:
+        typer.echo(f"  [{c['id']}] {c['question']}")
+
+
+@learn_app.command("review")
+def learn_review(
+    notebook: Optional[str] = typer.Option(None, "--notebook", "-n"),
+    limit: int = typer.Option(5, "--limit", "-l"),
+):
+    """List flashcards due for review."""
+    nb = _notebook(notebook)
+    from opennote.learning import due_cards
+
+    cards = due_cards(nb.directory, limit=limit)
+    if not cards:
+        typer.echo("No cards due right now.")
+        return
+    for c in cards:
+        typer.echo(f"[{c.id}] (review #{c.repetitions}) {c.question}")
+
+
+@learn_app.command("grade")
+def learn_grade(
+    card_id: str = typer.Argument(..., help="Card id from 'opennote learn review'."),
+    quality: int = typer.Argument(..., help="Grade 0-5 (0-2=lapse, 3-5=recalled)."),
+    notebook: Optional[str] = typer.Option(None, "--notebook", "-n"),
+):
+    """Grade a review and reschedule the card (SM-2-lite)."""
+    nb = _notebook(notebook)
+    from opennote.learning import review_card
+
+    card = review_card(nb.directory, card_id, quality)
+    if card is None:
+        typer.echo(f"Card '{card_id}' not found.", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"Next due in {card.interval_days} day(s) (ease {card.ease}).")
+
+
+@learn_app.command("assess")
+def learn_assess(
+    question: str = typer.Argument(..., help="The question that was asked."),
+    submission: str = typer.Argument(..., help="The learner's written answer."),
+    notebook: Optional[str] = typer.Option(None, "--notebook", "-n"),
+    provider: Optional[str] = typer.Option(None, "--provider", "-p"),
+):
+    """Grade a written answer against the sources."""
+    nb = _notebook(notebook)
+    from opennote.education import assess_writing
+    from opennote.retrieval.retriever import Retriever
+
+    client = _learning_client(provider)
+    results = Retriever(nb).search(question, top_k=8)
+    result = assess_writing(question, submission, results, nb.directory, client)
+    typer.echo("Feedback:")
+    typer.echo(f"  {result['feedback']}")
+    if result["unsupported"]:
+        typer.echo("Unsupported claims:")
+        for c in result["unsupported"]:
+            typer.echo(f"  - {c}")
+
+
+@learn_app.command("plan")
+def learn_plan(
+    notebook: Optional[str] = typer.Option(None, "--notebook", "-n"),
+    provider: Optional[str] = typer.Option(None, "--provider", "-p"),
+):
+    """Build a prerequisite-aware study plan across notebooks."""
+    nb = _notebook(notebook)
+    from opennote.agents.loop import agent_turn
+
+    client = _learning_client(provider)
+    result = agent_turn(
+        nb,
+        "Build me a prerequisite-aware study plan across my notebooks, "
+        "prioritising what I struggle with.",
+        client=client,
+        agent_name="curriculum",
+        provider_id=provider,
+    )
+    typer.echo(result.result.answer)
 
 
 @app.command("version")

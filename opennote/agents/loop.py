@@ -189,7 +189,10 @@ def agent_turn(
                 prov, mid = provider_id or default_provider(), model_override
             client = get_client(prov, model=mid)
         else:
-            client = get_client(provider_id or default_provider())
+            from opennote.auth.resolve import resolve_selection
+
+            sel = resolve_selection(provider=provider_id, notebook=notebook)
+            client = get_client(sel.provider, model=sel.model)
     if retriever is None:
         # opennote.json retrieval defaults apply only when the caller did not
         # pass an explicit value (and no injected retriever is in play).
@@ -365,6 +368,33 @@ def agent_turn(
         f"NEVER invent a tool that is not listed.{capabilities_line}"
     )
 
+    # Build the static system prompt ONCE. Rebuilding it per round by mutating
+    # ``system_prompt`` compounded the agent prefix on every tool round; keep the
+    # caller-supplied prompt immutable and use a dedicated assembled variable.
+    _pre_static = render_system_pre(
+        notebook_name=getattr(notebook, "name", None),
+        notebook_project=getattr(notebook, "project", None) or None,
+        source_count=len(getattr(notebook, "sources", []) or []),
+    )
+    _post_static = render_system_post()
+    agent_system_static = f"{system_prompt.strip()}\n\n" if system_prompt else ""
+    # Education: surface the persisted learner model (feature #4) when one
+    # exists. Empty for notebooks that have never used it.
+    learner_block = ""
+    try:
+        from opennote.learning import learner_context
+
+        _dir = getattr(notebook, "directory", None)
+        if _dir is not None:
+            learner_block = learner_context(_dir)
+    except Exception:
+        learner_block = ""
+    if learner_block:
+        learner_block = "\n" + learner_block + "\n"
+    assembled_system_prompt = (
+        agent_system_static + _pre_static + learner_block + SYSTEM_TOOLS_HINT_UPDATED + "\n" + _post_static
+    )
+
     for _ in range(max_rounds):
         if should_cancel is not None and should_cancel():
             raise TurnCancelled("Agent turn cancelled by caller.")
@@ -372,19 +402,10 @@ def agent_turn(
         if on_round is not None:
             on_round(rounds_used, max_rounds)
         try:
-            # Use Jinja-rendered system prompt with notebook context (defense 1)
-            _pre = render_system_pre(
-                notebook_name=getattr(notebook, "name", None),
-                notebook_project=getattr(notebook, "project", None) or None,
-                source_count=len(getattr(notebook, "sources", []) or []),
-            )
-            _post = render_system_post()
-            agent_system = f"{system_prompt.strip()}\n\n" if system_prompt else ""
-            system_prompt = agent_system + _pre + SYSTEM_TOOLS_HINT_UPDATED + "\n" + _post
             response = client.chat(
                 messages,
                 tools=available_tools,
-                system=system_prompt,
+                system=assembled_system_prompt,
                 max_tokens=max_tokens,
             )
             try:

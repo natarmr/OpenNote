@@ -442,37 +442,14 @@ class AnthropicClient(LLMClient):
 
 
 def default_provider() -> str:
-    """Configured default provider, else first keyed provider (alphabetical)."""
-    try:
-        from opennote.config import get_config
+    """Effective default provider id (back-compat wrapper around the resolver).
 
-        preferred = get_config().provider
-    except Exception:
-        preferred = None
-    if preferred:
-        pid = preferred.split("/", 1)[0].strip().lower()
-        try:
-            get_provider(pid)
-            return pid
-        except Exception:
-            pass
-    config = AuthConfig()
-    from opennote.auth.local import get_active as _ga
+    Precedence: explicit config → session → global last-used → configured
+    default → most recently validated provider. Never alphabetical.
+    """
+    from opennote.auth.resolve import resolve_selection
 
-    local_active = bool(_ga())
-    candidates = [
-        pid
-        for pid in sorted(config.providers())
-        if resolve_key(pid) and config.get(pid) and config.get(pid).model
-    ]
-    if candidates:
-        return candidates[0]
-    if local_active:
-        return "local"
-    raise ChatError(
-        "No provider is configured with a key and a model. "
-        "Run 'opennote auth add <provider>' first."
-    )
+    return resolve_selection().provider
 
 
 def get_client(provider_id: str, model: Optional[str] = None) -> LLMClient:
@@ -481,6 +458,25 @@ def get_client(provider_id: str, model: Optional[str] = None) -> LLMClient:
     ``model`` overrides the stored default when supplied (used by agent
     frontmatter ``model: provider/model`` overrides).
     """
+    # "local" is not a registered provider — handle it directly.
+    if str(provider_id).strip().lower() == "local":
+        from opennote.auth.local import get_active as _get_active
+
+        active = _get_active()
+        if not active:
+            raise ChatError(
+                "No local model configured. "
+                "Run ``opennote local add <path-to-gguf>`` to register one, "
+                "then ``opennote local use <name>`` to activate it."
+            )
+        from opennote.chat.local import LocalLlamaClient  # noqa: E501 (cyclic import guard)
+
+        return LocalLlamaClient(
+            model_name=active["name"],
+            model_path=active["path"],
+            n_ctx=active.get("n_ctx", 4096),
+            threads=active.get("threads"),
+        )
     provider = get_provider(provider_id)
     if provider.flavor == "local":
         # Local GGUF model — no API key required; model path stored in local config.
@@ -507,28 +503,36 @@ def get_client(provider_id: str, model: Optional[str] = None) -> LLMClient:
             f"No API key for {provider.label}. Run 'opennote auth add {provider_id}', "
             f"or set the {provider.env_var} environment variable."
         )
+    config = AuthConfig()
+    settings = config.get(provider_id)
     if model is None:
         try:
             from opennote.config import get_config
 
-            default = get_config().model
-            if default:
-                if "/" in default:
-                    cprov, cmodel = default.split("/", 1)
-                    if cprov.strip().lower() == provider_id:
-                        model = cmodel.strip()
-                else:
-                    model = default.strip()
+            cfg = get_config()
+            default = cfg.model or ""
+            if "/" in default:
+                cprov, cmodel = default.split("/", 1)
+                if cprov.strip().lower() == provider_id:
+                    model = cmodel.strip()
+            # A bare model in config.model no longer applies to every provider.
+            pcfg = cfg.providers.get(provider_id, {})
+            model = model or pcfg.get("model")
         except Exception:
             pass
-    config = AuthConfig()
-    settings = config.get(provider_id)
     model = model or (settings.model if settings else None)
     if not model:
         raise ChatError(
             f"No model selected for {provider.label}. Run 'opennote auth models {provider_id}'."
         )
     base_url = settings.base_url_override if settings else None
+    try:
+        from opennote.config import get_config
+
+        pcfg = get_config().providers.get(provider_id, {})
+        base_url = base_url or pcfg.get("base_url") or pcfg.get("base_url_override")
+    except Exception:
+        pass
     if provider.flavor == "anthropic":
         return AnthropicClient(provider, api_key, model, base_url=base_url)
     return OpenAICompatClient(provider, api_key, model, base_url=base_url)

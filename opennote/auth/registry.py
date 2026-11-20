@@ -173,16 +173,52 @@ BY_ID: Dict[str, Provider] = {p.id: p for p in PROVIDERS}
 _ALIASES: Dict[str, str] = {"muse": "meta"}
 
 
+def _config_providers() -> Dict[str, Provider]:
+    """Build Provider entries from ``opennote.json`` ``providers:`` blocks.
+
+    Minimal opencode-style custom providers: any OpenAI-compatible endpoint can
+    be added with a base_url + model list. Keys come from the OS keychain or an
+    env var (``env`` / ``api_key_env``), never from the config file itself.
+    """
+    try:
+        from opennote.config import get_config
+
+        cfg = get_config()
+    except Exception:
+        return {}
+    out: Dict[str, Provider] = {}
+    for pid, entry in cfg.providers.items():
+        if not isinstance(entry, dict):
+            continue
+        base = str(entry.get("base_url") or entry.get("base_url_override") or "").rstrip("/")
+        if not base:
+            continue
+        env = str(entry.get("env") or entry.get("api_key_env") or f"{pid.upper()}_API_KEY")
+        name = str(entry.get("name") or pid.title())
+        models = tuple(str(m) for m in (entry.get("models") or []))
+        out[pid] = Provider(
+            id=pid,
+            label=name,
+            flavor=str(entry.get("flavor") or "openai"),
+            base_url=base,
+            models_url=base + "/models",
+            env_var=env,
+            console_url=str(entry.get("console_url") or ""),
+            preferred_models=models,
+        )
+    return out
+
+
 def get_provider(provider_id: str) -> Provider:
     pid = _ALIASES.get(provider_id, provider_id)
-    try:
+    if pid in BY_ID:
         return BY_ID[pid]
-    except KeyError:
-        available = ", ".join(p.id for p in PROVIDERS)
-        raise ValueError(
-            f"Unknown provider '{provider_id}'. Available: {available}"
-        )
+    custom = _config_providers()
+    if pid in custom:
+        return custom[pid]
+    available = ", ".join(p.id for p in PROVIDERS)
+    raise ValueError(f"Unknown provider '{provider_id}'. Available: {available}")
 
 
 def all_providers() -> List[Provider]:
-    return list(PROVIDERS)
+    return list(PROVIDERS) + list(_config_providers().values())

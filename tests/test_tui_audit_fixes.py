@@ -434,7 +434,7 @@ async def test_auth_dialog_is_ascii(tmp_path):
         assert isinstance(pilot.app.screen, InfoDialog)
         plain = pilot.app.screen.query_one("#dialog-body").render().plain
         assert all(ord(ch) < 128 for ch in plain), repr(plain)
-        assert "key set" in plain
+        assert "key=" in plain
 
 
 def test_tui_chrome_strings_are_ascii():

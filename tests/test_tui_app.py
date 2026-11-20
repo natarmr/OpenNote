@@ -117,12 +117,28 @@ async def test_meta_row_shows_model_and_provider(tmp_path):
         assert bar.provider == "groq"
 
 
+def test_chat_screen_uses_resolve_home_for_global_notebooks(tmp_path, monkeypatch):
+    """Bare `opennote` must see OPENNOTE_HOME, not a fresh cwd/.opennote.
+
+    The CLI already uses resolve_home(); this pins the TUI to the same global
+    resolution so the education features work from any directory.
+    """
+    from opennote.tui.screens.chat import ChatScreen
+
+    global_home = tmp_path / "global-opennote"
+    monkeypatch.setenv("OPENNOTE_HOME", str(global_home))
+    screen = ChatScreen(palette=DARK)
+    assert screen._manager.home == global_home
+
+
 async def test_tab_cycles_modes(tmp_path):
     app = await _make_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
         bar = app.screen.query_one("#prompt-bar", PromptBar)
+        screen = app.screen
         assert bar.mode == "ask"
+        assert screen._agent_name is None
         await pilot.press("tab")
         await pilot.pause()
         assert bar.mode == "search"
@@ -131,7 +147,20 @@ async def test_tab_cycles_modes(tmp_path):
         assert bar.mode == "studio"
         await pilot.press("tab")
         await pilot.pause()
+        assert bar.mode == "tutor"
+        assert screen._agent_name == "tutor"
+        await pilot.press("tab")
+        await pilot.pause()
+        assert bar.mode == "socratic"
+        assert screen._agent_name == "socratic"
+        await pilot.press("tab")
+        await pilot.pause()
+        assert bar.mode == "curriculum"
+        assert screen._agent_name == "curriculum"
+        await pilot.press("tab")
+        await pilot.pause()
         assert bar.mode == "ask"
+        assert screen._agent_name is None
 
 
 async def test_slash_help_opens_dialog(tmp_path):
@@ -753,7 +782,7 @@ async def test_auth_opens_info_dialog(tmp_path, monkeypatch):
         assert isinstance(app.screen, InfoDialog)
         body = app.screen.query_one("#dialog-body").render().plain
         assert "groq" in body
-        assert "no key" in body
+        assert "Default:" in body
         await pilot.press("escape")
         await pilot.pause()
 

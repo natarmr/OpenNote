@@ -57,7 +57,7 @@ In a world dominated by Artificial Intelligence, having the ability to think and
 | **Studio generators** | Mind‑map, study guide, FAQ, briefing, timeline, suggested questions — with audio and narrated video output |
 | **TTS chain** | groq → openai → gemini → edge-tts; graceful degradation to markdown transcript |
 | **Narrated video** | Per‑slide Pillow images + TTS mp3 + ffmpeg mux to MP4; degrades to script + slides if any stage fails |
-| **Textual TUI** | Tab cycles `ask → search → studio`; `/studio` submenu; slash commands `/mindmap /study /faq /briefing /timeline /suggest /audio /video /open` · `/use <skill>` · `/skills /skill /plugins /agents /agent /capabilities /context /theme /help` + `/snake` waiting-room game |
+| **Textual TUI** | Tab cycles `ask → search → studio → tutor → socratic → curriculum` (built-in education agents, global); `/studio` submenu; slash commands `/mindmap /study /faq /briefing /timeline /suggest /audio /video /open` · `/use <skill>` · `/skills /skill /plugins /agents /agent /capabilities /context /theme /help` + `/snake` waiting-room game |
 
 ---
 ## 🆚 Open Notebook vs Google Notebook LM
@@ -165,9 +165,21 @@ keychain (see `opennote auth`); `auth.json` keeps only provider→model mappings
 // <project>/opennote.json             (project)
 // <project>/.opennote/opennote.json   (project-local, highest precedence)
 {
-  "model": "groq/qwen/qwen3.8-27b",  // optional default, overrides auth.json
-  "provider": "groq",
+  "model": "groq/qwen/qwen3.8-27b",  // optional default for new work
+  "last_used": {                      // auto-updated on /model, /connect, --provider
+    "provider": "groq",
+    "model": "qwen/qwen3.8-27b"
+  },
   "default_agent": "ask",
+  // Minimal custom OpenAI-compatible provider (key from keychain or env):
+  "providers": {
+    "my-gateway": {
+      "name": "My Gateway",
+      "base_url": "https://llm.example.com/v1",
+      "env": "MY_GATEWAY_KEY",
+      "models": ["my-model-1", "my-model-2"]
+    }
+  },
   "theme": "tokyonight",             // opencode|opencode-light|tokyonight|catppuccin|gruvbox
   "keybinds": { "leader": "ctrl+x" },
   "retrieval": { "top_k": null, "bm25": true, "bm25_alpha": 0.5, "context_budget": 12000 },
@@ -183,8 +195,29 @@ Permissions are ordered; the **last matching rule wins**. Effects are `allow`,
 `deny` and `ask`. `ask` opens an approval prompt in the TUI (`1` once · `2`
 always · `3`/`esc` reject) or in the chat REPL; "always" persists a project rule.
 Agents may narrow permissions further in their frontmatter `permission:` block.
-Run `opennote config` to see the resolved config or `opennote config --path` to
-see which files are loaded.
+
+Run `opennote config` to see the resolved config, `opennote config --path` for
+loaded files, or `opennote config --effective` for a table of every provider's
+key source, model and endpoint plus the resolved default. `{env:VAR}` is
+substituted anywhere in the config.
+
+### Default model and last-used
+
+Startup picks a provider/model in this order: explicit `--provider`/`--model`
+> notebook session > global `last_used` > configured default > most recently
+> validated provider. It is **never alphabetical** anymore. Switching model in
+a session does not rewrite your configured default (like opencode); it updates
+`last_used` globally so the next launch opens where you left off. To change the
+configured default explicitly, edit `model:` in `opennote.json`.
+
+### Adding a provider
+
+`opennote auth add <provider>` prompts for a key (hidden), validates it and
+auto-selects a model. Use `--env VAR` to read the key from an environment
+variable instead of prompting. Keys go to the OS keychain; non-secrets to
+`auth.json`. Env fallback works without adding: set `GROQ_API_KEY`,
+`GEMINI_API_KEY`, `OPENAI_API_KEY`, `MODEL_API_KEY` (Meta), etc. — the effective
+source is shown in `opennote auth list` and `opennote config --effective`.
 
 ---
 

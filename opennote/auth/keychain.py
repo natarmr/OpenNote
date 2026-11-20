@@ -57,6 +57,7 @@ def set_key(provider_id: str, api_key: str) -> None:
 
 def get_key(provider_id: str) -> Optional[str]:
     global _last_backend_error
+    provider_id = _canonical_id(provider_id)
     try:
         value = keyring.get_password(SERVICE, provider_id)
         _last_backend_error = None
@@ -73,6 +74,7 @@ def get_key(provider_id: str) -> Optional[str]:
 
 def delete_key(provider_id: str) -> bool:
     """Remove a stored key. Returns True if a key was present."""
+    provider_id = _canonical_id(provider_id)
     try:
         existing = keyring.get_password(SERVICE, provider_id)
         if existing is not None:
@@ -117,6 +119,24 @@ def resolve_key(provider_id: str) -> Optional[str]:
             if alt != provider.env_var and (val := os.environ.get(alt)):
                 return val
     return None
+
+
+def resolve_key_source(provider_id: str) -> str:
+    """Return where a provider's effective key comes from (for diagnostics)."""
+    if not resolve_key(provider_id):
+        return "none"
+    cid = _canonical_id(provider_id)
+    provider = get_provider(cid)
+    for pid in (cid, provider_id) if cid != provider_id else (cid,):
+        if get_key(pid):
+            return "keychain"
+    candidates = [provider.env_var]
+    if cid == "meta":
+        candidates += ["META_API_KEY", "MUSE_API_KEY"]
+    for var in candidates:
+        if var and os.environ.get(var):
+            return f"env:{var}"
+    return "none"
 
 
 def mask_key(api_key: str, keep: int = 4) -> str:

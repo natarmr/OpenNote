@@ -67,33 +67,50 @@ class OpenNoteConfig:
     keybinds: Dict[str, Any] = field(default_factory=dict)
     tool_output: ToolOutputConfig = field(default_factory=ToolOutputConfig)
     agents: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    #: Global last-used provider/model, written on explicit switches only.
+    last_used: Dict[str, str] = field(default_factory=dict)
+    #: Declarative provider overrides (model, base_url, env, model list).
+    providers: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     #: Highest-precedence file that actually existed (diagnostics / saves).
     source_path: Optional[Path] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "model": self.model,
-            "provider": self.provider,
-            "default_agent": self.default_agent,
-            "permissions": list(self.permissions),
-            "retrieval": {
-                "top_k": self.retrieval.top_k,
-                "bm25": self.retrieval.bm25,
-                "bm25_alpha": self.retrieval.bm25_alpha,
-                "context_budget": self.retrieval.context_budget,
-            },
-            "theme": self.theme,
-            "keybinds": dict(self.keybinds),
-            "tool_output": {
-                "max_lines": self.tool_output.max_lines,
-                "max_bytes": self.tool_output.max_bytes,
-            },
-            "agents": {k: dict(v) for k, v in self.agents.items()},
-        }
+        """Serialize only explicitly-set values — a null here would override a
+        value from a lower-precedence file when merged on load."""
+        out: Dict[str, Any] = {}
+        for key in ("model", "provider", "default_agent", "theme"):
+            value = getattr(self, key)
+            if value is not None:
+                out[key] = value
+        if self.permissions:
+            out["permissions"] = list(self.permissions)
+        defaults = RetrievalConfig()
+        rdiff = {}
+        for k in ("top_k", "bm25", "bm25_alpha", "context_budget"):
+            if getattr(self.retrieval, k) != getattr(defaults, k):
+                rdiff[k] = getattr(self.retrieval, k)
+        if rdiff:
+            out["retrieval"] = rdiff
+        if self.keybinds:
+            out["keybinds"] = dict(self.keybinds)
+        tdef = ToolOutputConfig()
+        tdiff = {}
+        for k in ("max_lines", "max_bytes"):
+            if getattr(self.tool_output, k) != getattr(tdef, k):
+                tdiff[k] = getattr(self.tool_output, k)
+        if tdiff:
+            out["tool_output"] = tdiff
+        if self.agents:
+            out["agents"] = {k: dict(v) for k, v in self.agents.items()}
+        if self.last_used:
+            out["last_used"] = dict(self.last_used)
+        if self.providers:
+            out["providers"] = {k: dict(v) for k, v in self.providers.items()}
+        return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], path: Optional[Path] = None) -> "OpenNoteConfig":
-        data = data if isinstance(data, dict) else {}
+        data = resolve_env_placeholders(data if isinstance(data, dict) else {})
         r = data.get("retrieval") or {}
         t = data.get("tool_output") or {}
         cfg = cls(
@@ -114,9 +131,41 @@ class OpenNoteConfig:
                 max_bytes=_int(t.get("max_bytes"), 51200),
             ),
             agents=data.get("agents") if isinstance(data.get("agents"), dict) else {},
+            last_used=data.get("last_used") if isinstance(data.get("last_used"), dict) else {},
+            providers=_providers_dict(data.get("providers")),
             source_path=path,
         )
         return cfg
+
+
+def _providers_dict(value: Any) -> Dict[str, Dict[str, Any]]:
+    """Keep only well-shaped provider entries from config."""
+    out: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(value, dict):
+        return out
+    for pid, entry in value.items():
+        if isinstance(entry, dict):
+            out[str(pid).strip().lower()] = dict(entry)
+    return out
+
+
+_ENV_VAR_RE = __import__("re").compile(r"^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+
+def resolve_env_placeholders(value: Any) -> Any:
+    """Recursively replace ``{env:VAR}`` strings with the variable's value.
+
+    Mirrors opencode's config substitution. A missing variable becomes an empty
+    string so a key never silently falls back to a wrong credential.
+    """
+    if isinstance(value, str):
+        m = _ENV_VAR_RE.match(value.strip())
+        return os.environ.get(m.group(1), "") if m else value
+    if isinstance(value, dict):
+        return {k: resolve_env_placeholders(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [resolve_env_placeholders(v) for v in value]
+    return value
 
 
 def _str_or_none(value: Any) -> Optional[str]:
@@ -266,7 +315,13 @@ def config_paths(cwd: Optional[Path] = None) -> List[Path]:
     cwd = Path(cwd) if cwd is not None else Path.cwd()
     paths: List[Path] = []
 
-    global_dir = Path(os.environ.get("OPENNOTE_CONFIG_HOME") or (Path.home() / ".opennote"))
+    # OPENNOTE_HOME overrides the notebook store; config follows it unless an
+    # explicit OPENNOTE_CONFIG_HOME is given (tests isolate via OPENNOTE_HOME).
+    global_dir = Path(
+        os.environ.get("OPENNOTE_CONFIG_HOME")
+        or os.environ.get("OPENNOTE_HOME")
+        or (Path.home() / ".opennote")
+    )
     paths.append(global_dir / CONFIG_NAME)
 
     roots = list(reversed(walk_worktree_roots(cwd)))  # farthest → closest
@@ -301,25 +356,42 @@ def load_config(cwd: Optional[Path] = None) -> OpenNoteConfig:
 
 
 _cached: Optional[OpenNoteConfig] = None
+_cached_env: Optional[str] = None
 
 
 def get_config() -> OpenNoteConfig:
-    """Return the process-wide config snapshot (reload via :func:`clear_cached`)."""
-    global _cached
-    if _cached is None:
+    """Return the process-wide config snapshot (reload via :func:`clear_cached`).
+
+    The snapshot is invalidated when ``OPENNOTE_HOME`` or ``OPENNOTE_CONFIG_HOME``
+    changes, so tests and multi-project processes never read a stale global.
+    """
+    global _cached, _cached_env
+    env_key = (
+        os.environ.get("OPENNOTE_CONFIG_HOME", "")
+        + "|"
+        + os.environ.get("OPENNOTE_HOME", "")
+    )
+    if _cached is None or _cached_env != env_key:
         _cached = load_config()
+        _cached_env = env_key
     return _cached
 
 
 def clear_cached() -> None:
-    global _cached
+    global _cached, _cached_env
     _cached = None
+    _cached_env = None
 
 
 def project_config_path(cwd: Optional[Path] = None) -> Path:
     """Where ``save_config`` / approval saves write by default."""
     cwd = Path(cwd) if cwd is not None else Path.cwd()
     return cwd / ".opennote" / CONFIG_NAME
+
+
+def global_config_path() -> Path:
+    """User-global config path (follows OPENNOTE_HOME/CONFIG_HOME)."""
+    return config_paths()[0]
 
 
 def save_config(cfg: OpenNoteConfig, path: Optional[Path] = None) -> Path:

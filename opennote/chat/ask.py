@@ -274,7 +274,12 @@ def ask(
     (up to 3 sub-queries); falls back to single-shot on any planner failure.
     """
     if client is None:
-        client = get_client(provider_id or default_provider())
+        from opennote.auth.resolve import resolve_selection, set_last_used
+
+        sel = resolve_selection(provider=provider_id, notebook=notebook)
+        client = get_client(sel.provider, model=sel.model)
+        if sel.explicit:
+            set_last_used(sel.provider, sel.model or getattr(client, "model", None))
     if retriever is None:
         r_kwargs: dict = {}
         if top_k is not None:

@@ -7,7 +7,15 @@ from typing import Optional
 import typer
 
 from opennote.auth.config import AuthConfig
-from opennote.auth.keychain import KeychainError, delete_key, get_key, mask_key, resolve_key, set_key
+from opennote.auth.keychain import (
+    KeychainError,
+    delete_key,
+    get_key,
+    mask_key,
+    resolve_key,
+    resolve_key_source,
+    set_key,
+)
 from opennote.auth.models import rank_models, select_default
 from opennote.auth.registry import all_providers, get_provider
 from opennote.auth.validate import validate_key
@@ -24,6 +32,7 @@ def _print_error(message: str):
 def auth_add(
     provider_id: str = typer.Argument(..., help="Provider id (e.g. anthropic, openai, groq)."),
     no_verify: bool = typer.Option(False, "--no-verify", help="Store without validating."),
+    env: Optional[str] = typer.Option(None, "--env", help="Use this environment variable's value as the key (no prompt)."),
 ):
     """Add a provider key (validated on entry) and auto-select a model."""
     try:
@@ -41,10 +50,16 @@ def auth_add(
         typer.echo(f"Note: {provider.label} is already configured — overwriting.")
         typer.echo(f"  existing key (hidden, from {'keychain' if get_key(provider.id) else 'env'})")
 
-    api_key = typer.prompt(
-        f"Paste your {provider.label} API key (get one at {provider.console_url})",
-        hide_input=True,
-    ).strip()
+    if env:
+        api_key = os.environ.get(env, "").strip()
+        if not api_key:
+            _print_error(f"Environment variable {env} is unset or empty.")
+        typer.echo(f"Using API key from ${env}.")
+    else:
+        api_key = typer.prompt(
+            f"Paste your {provider.label} API key (get one at {provider.console_url})",
+            hide_input=True,
+        ).strip()
     if not api_key:
         _print_error("No key entered.")
 
@@ -113,7 +128,7 @@ def auth_list():
         settings = providers[pid]
         key = resolve_key(pid)
         if key:
-            source = "keychain" if get_key(pid) else f"env:{provider.env_var}"
+            source = resolve_key_source(pid)
             key_text = mask_key(key)
         else:
             source = "none"
@@ -182,10 +197,9 @@ def auth_verify(
     config = AuthConfig()
     if provider_id:
         try:
-            get_provider(provider_id)
+            targets = [get_provider(provider_id).id]
         except ValueError as e:
             _print_error(str(e))
-        targets = [provider_id]
     else:
         targets = sorted(config.providers())
         if not targets:
@@ -206,6 +220,10 @@ def auth_verify(
             config.mark_validated(pid)
             typer.echo(f"  [ok] {provider.label:<14} valid ({len(result.models)} models)")
         elif result.error == "invalid-key":
+            settings = config.get(pid)
+            if settings:
+                settings.last_validated_at = None
+                config.save()
             typer.echo(f"  [!!] {provider.label:<14} INVALID KEY (revoked?) — run 'opennote auth remove'")
         else:
             typer.echo(f"  [!!] {provider.label:<14} {result.error}")
@@ -223,7 +241,7 @@ def auth_remove(
 
     config = AuthConfig()
     key_removed = delete_key(provider.id)
-    config_removed = config.remove(provider.id)
+    config_removed = config.remove(provider.id) or config.remove(provider_id)
     if key_removed or config_removed:
         typer.echo(f"Removed {provider.label} key and config.")
     else:
@@ -299,8 +317,8 @@ def auth_endpoint(
             normalized = _normalize_endpoint_url(url)
         except ValueError as e:
             _print_error(str(e))
-        config.set_base_url(provider_id, normalized)
-        typer.echo(f"[ok] Endpoint for {provider_id} set to {normalized}")
+        config.set_base_url(get_provider(provider_id).id, normalized)
+        typer.echo(f"[ok] Endpoint for {get_provider(provider_id).id} set to {normalized}")
         typer.echo("Use `opennote auth add --no-verify` for keyless tunnels, then `auth models --set <id>`.")
         return
     if action == "clear":

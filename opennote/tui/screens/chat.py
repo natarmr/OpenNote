@@ -22,15 +22,16 @@ from textual.screen import Screen
 from textual.widgets import Footer
 
 from opennote.agents.loop import TurnCancelled, agent_turn
+from opennote.auth.resolve import resolve_selection, set_last_used
 from opennote.chat.ask import AskResult
-from opennote.chat.client import ChatError, default_provider, get_client
-from opennote.notebooks import Notebook, NotebookManager, current_project
+from opennote.chat.client import ChatError, get_client
+from opennote.notebooks import Notebook, NotebookManager, current_project, resolve_home
 from opennote.retrieval.retriever import Retriever, render_results
 from opennote.transcript import append_messages, load_transcript, clear_transcript, save_transcript
 from opennote.tui.commands import lookup, make_commands
 from opennote.tui.dialogs import HelpDialog, InfoDialog, PermissionDialog, ask_input, item_list, confirm_dialog
 from opennote.tui.theme import DEFAULT, LIGHT, Palette
-from opennote.tui.widgets.prompt import MODE_LABELS, MODES, PromptBar, PromptInput
+from opennote.tui.widgets.prompt import MODE_AGENTS, MODE_LABELS, MODES, PromptBar, PromptInput
 from opennote.tui.widgets.sidebar import SideBar
 from opennote.tui.widgets.transcript import Transcript
 
@@ -204,13 +205,19 @@ class ChatScreen(Screen):
         # None means bare launch: auto-open new notebook via prompt
         self.notebook_name = notebook_name
         self.palette = palette or DEFAULT
-        self._manager = manager or NotebookManager()
+        # Use resolve_home() (same as the CLI) so bare `opennote` from any
+        # directory sees OPENNOTE_HOME / an ancestor .opennote rather than
+        # silently creating a fresh per-cwd store. This is what makes the
+        # education features work globally on the machine.
+        self._manager = manager or NotebookManager(home=resolve_home())
         self._provider_id = provider_id
         self._client = client
         self._retriever = retriever
         self._ingest_fn = ingest_fn
         self._cancel_flag = False
         self.mode = "ask"
+        # Education agents (tutor/socratic/curriculum) selectable via /agent.
+        self._agent_name: Optional[str] = None
         self.notebook: Optional[Notebook] = None
         # Guards the startup dialog against double-push (only one may exist).
         self._startup_pending = False
@@ -312,10 +319,10 @@ class ChatScreen(Screen):
         self.transcript.palette = self.palette
         self.commands = make_commands(self)
         self.prompt.set_commands(self.commands)
-        self._resolve_provider()
         # Notebook resolution: explicit name -> direct open, None -> startup flow (auto new)
         if self.notebook_name:
             self._resolve_notebook_direct(self.notebook_name)
+            self._resolve_provider()
             self._finish_mount()
         else:
             self._startup_auto_new()
@@ -402,19 +409,25 @@ class ChatScreen(Screen):
             return
         self.notebook = nb
         self.notebook_name = nb.name
+        self._resolve_provider()
         self._finish_mount()
 
-    def _resolve_provider(self) -> None:
+    def _resolve_provider(self, notebook=None) -> None:
+        """Build the client from the resolved selection (session/global/config).
+
+        Called after notebook resolution so its saved provider/model wins over
+        the global last-used selection (opencode: a session keeps its model).
+        """
         if self._client is not None:
             return
-        if self._provider_id:
-            try:
-                self._client = get_client(self._provider_id)
-            except (ChatError, ValueError) as e:
-                self.transcript.add_error(str(e))
-            return
         try:
-            self._client = get_client(default_provider())
+            sel = resolve_selection(provider=self._provider_id, notebook=notebook or self.notebook)
+            try:
+                self._client = get_client(sel.provider, model=sel.model)
+            except TypeError:
+                # A client injected/monkeypatched with the legacy one-arg
+                # signature (tests, plugins) — fall back to provider only.
+                self._client = get_client(sel.provider)
         except (ChatError, ValueError) as e:
             self.transcript.add_error(str(e))
 
@@ -788,6 +801,7 @@ class ChatScreen(Screen):
                     self.post_message, RoundProgress(used, total)
                 ),
                 permission_handler=self._permission_handler,
+                agent_name=self._agent_name,
             )
         except TurnCancelled:
             self.app.call_from_thread(self.post_message, TurnCancelledMsg())
@@ -1334,7 +1348,9 @@ class ChatScreen(Screen):
             self._open_provider_dialog()
             return
         try:
-            self._client = get_client(arg)
+            sel = resolve_selection(provider=arg, notebook=self.notebook)
+            self._client = get_client(sel.provider, model=sel.model)
+            set_last_used(sel.provider, self._client.model)
         except (ChatError, ValueError) as e:
             self.transcript.add_error(str(e))
             return
@@ -1569,6 +1585,22 @@ class ChatScreen(Screen):
         lines.append("")
         lines.append(agent.prompt[:3000] if agent.prompt else "(no prompt body)")
         self.app.push_screen(InfoDialog(f"Agent: {agent.name}", "\n".join(lines)))
+        # Arm this agent for subsequent ask turns. Built-in education agents
+        # also switch the Tab mode to match, so the status row and the armed
+        # agent stay in sync no matter how it was selected.
+        can_arm = agent.mode in ("primary", "all")
+        self._agent_name = agent.name if can_arm else None
+        if can_arm and agent.name in MODES:
+            # _set_mode re-derives _agent_name from MODE_AGENTS — which is the
+            # same name — keeping one source of truth.
+            self._set_mode(agent.name)
+        label = f"Agent armed: {agent.name}" if can_arm else f"Agent '{agent.name}' is subagent-only; not armed"
+        self.transcript.add_info(label)
+
+    def _reset_agent(self, _arg: str = "") -> None:
+        """Return to the default grounded-Q&A agent."""
+        self._set_mode("ask")
+        self.transcript.add_info("Agent reset to default (ask)")
 
     def _show_capabilities(self, _arg: str = "") -> None:
         from opennote.capabilities import get_capabilities
@@ -1619,12 +1651,17 @@ class ChatScreen(Screen):
             return
         self.mode = mode if mode in MODES else "ask"
         self.prompt.set_mode(self.mode)
+        # Education modes arm their matching built-in agent automatically, so
+        # Tab alone is enough to reach the tutor/socratic/curriculum agents —
+        # no /agent command or per-notebook config required.
+        self._agent_name = MODE_AGENTS.get(self.mode)
         # Mode feedback belongs in the status row, not the transcript: Tab is the
         # most-pressed key and a line per press buried the scrollback.
         label = MODE_LABELS.get(self.mode, self.mode)
-        self.prompt.set_idle(
-            hint=f"{label} mode - tab cycles, ctrl+p for all actions"
-        )
+        hint = f"{label} mode - tab cycles, ctrl+p for all actions"
+        if self._agent_name:
+            hint = f"{label} agent armed - tab cycles, ctrl+p for all actions"
+        self.prompt.set_idle(hint=hint)
 
     def _switch_theme(self, arg: str = "") -> None:
         choice = arg.strip().lower()
@@ -2061,22 +2098,36 @@ class ChatScreen(Screen):
 
     # -- auth / connect -------------------------------------------------
 
-    def _show_auth(self, _arg: str = "") -> None:
+    def _show_auth(self, arg: str = "") -> None:
+        """Compact provider view. ``/auth all`` also shows unconfigured ones."""
         from opennote.auth.config import AuthConfig
-        from opennote.auth.keychain import resolve_key
+        from opennote.auth.keychain import resolve_key_source
         from opennote.auth.registry import all_providers
+        from opennote.auth.resolve import resolve_selection
 
         config = AuthConfig()
-        lines = ["Providers:"]
+        show_all = arg.strip().lower() in ("all", "--all")
+        lines = []
         for p in all_providers():
             settings = config.get(p.id)
             model = settings.model if settings else None
-            key = resolve_key(p.id)
-            bits = ["key set" if key else "no key"]
-            bits.append(f"model {model}" if model else "no model")
+            src = resolve_key_source(p.id)
+            configured = src != "none" or model
+            if not configured and not show_all:
+                continue
             marker = " *" if self._client and p.id == self._client.provider_id else ""
-            lines.append(f"  {p.id:<10} {', '.join(bits)}{marker}")
-        self.app.push_screen(InfoDialog("Auth", "\n".join(lines)))
+            endpoint = f" | {settings.base_url_override}" if settings and settings.base_url_override else ""
+            lines.append(
+                f"  {p.id:<10} key={src:<20} model={(model or '-'):<28}{endpoint}{marker}"
+            )
+        try:
+            sel = resolve_selection()
+            lines.insert(0, f"Default: {sel.label} ({sel.source})\n")
+        except Exception:
+            pass
+        if not lines:
+            lines = ["No providers configured. Use /connect <provider> or opennote auth add."]
+        self.app.push_screen(InfoDialog("Providers", "\n".join(lines)))
 
     def _start_connect(self, arg: str = "") -> None:
         from opennote.auth.registry import all_providers, get_provider
@@ -2222,7 +2273,7 @@ class ChatScreen(Screen):
                 )
                 return
             from opennote.auth.config import AuthConfig
-            from opennote.auth.keychain import mask_key, set_key
+            from opennote.auth.keychain import set_key
 
             try:
                 set_key(pid, key)
@@ -2230,7 +2281,7 @@ class ChatScreen(Screen):
             except Exception as e:
                 self.transcript.add_error(str(e))
                 return
-            self.transcript.add_info(f"Stored API key for {pid} ({mask_key(key)}).")
+            self.transcript.add_info(f"Stored API key for {pid}.")
             self._open_connect_model(get_provider(pid), key)
 
         return handler
@@ -2255,14 +2306,16 @@ class ChatScreen(Screen):
         from opennote.auth.registry import get_provider
         from opennote.auth.validate import validate_key
 
+        error = None
         try:
             result = validate_key(get_provider(provider_id), key)
         except Exception as e:
             logger.exception("Model validation failed")
             result = None
-        self.app.call_from_thread(
-            self.post_message, ModelsResultMsg(provider_id, key, result, flow)
-        )
+            error = str(e)
+        msg = ModelsResultMsg(provider_id, key, result, flow)
+        msg.error = error
+        self.app.call_from_thread(self.post_message, msg)
 
     def on_models_result_msg(self, msg: ModelsResultMsg) -> None:
         if getattr(msg, "flow", "connect") == "switch":
@@ -2282,6 +2335,14 @@ class ChatScreen(Screen):
         result = msg.result
         if result is not None and result.ok:
             models = rank_models(provider, result.models)
+        elif result is None:
+            # Validation raised (network/DNS/timeout) — never offer stale
+            # preferred models as if they were live for this endpoint.
+            self.transcript.add_error(
+                f"Could not validate {provider.label} ({getattr(msg, 'error', 'unknown error')}). "
+                "Check connectivity or endpoint, then retry /connect."
+            )
+            return
         else:
             if result.error == "invalid-key":
                 self.transcript.add_error("Invalid API key - could not fetch models.")
@@ -2294,6 +2355,9 @@ class ChatScreen(Screen):
                 self.transcript.add_info(
                     f"Model catalog returned an error ({result.error}) - using default models."
                 )
+            self.transcript.add_info(
+                "Offline model list is a best guess; IDs may differ on custom endpoints."
+            )
             models = list(provider.preferred_models)
 
         if settings and settings.model:
@@ -2358,6 +2422,7 @@ class ChatScreen(Screen):
             self.transcript.add_error(str(e))
             return
         self._client = client
+        set_last_used(pid, client.model)
         try:
             from opennote.capabilities import clear_cached as _clear_caps
 
@@ -2415,9 +2480,11 @@ class ChatScreen(Screen):
             return
         from opennote.auth.config import AuthConfig
 
-        AuthConfig().set_model(self._client.provider_id, model)
+        pid = self._client.provider_id
+        AuthConfig().set_model(pid, model)
         try:
-            self._client = get_client(self._client.provider_id)
+            self._client = get_client(pid)
+            set_last_used(pid, model)
         except (ChatError, ValueError) as e:
             self.transcript.add_error(str(e))
             return

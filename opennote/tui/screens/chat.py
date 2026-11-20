@@ -1365,17 +1365,27 @@ class ChatScreen(Screen):
         from opennote.auth.registry import all_providers
 
         config = AuthConfig()
+        current = self._client.provider_id if self._client else ""
         items = []
         for p in all_providers():
             settings = config.get(p.id)
             model = settings.model if settings else None
             if not (resolve_key(p.id) and model):
                 continue
-            items.append((p.id, f"{p.label} | {model}"))
+            mark = ">" if p.id == current else " "
+            items.append((p.id, f"{mark} {p.id:<12} {model}"))
         if not items:
-            self.transcript.add_info("No provider configured. Run 'opennote auth add <provider>'.")
+            self.transcript.add_info("No provider configured. Run /connect or 'opennote auth add <provider>'.")
             return
-        item_list(self.app, "Provider", items, on_pick=self._on_provider_picked)
+        subtitle = f"Active: {current or 'none'}. Switching here does not change your configured default."
+        item_list(
+            self.app,
+            "Switch provider",
+            items,
+            on_pick=self._on_provider_picked,
+            subtitle=subtitle,
+            hint="type to filter - enter switch - esc cancel",
+        )
 
     def _on_provider_picked(self, pid: Optional[str]) -> None:
         if pid:
@@ -2106,7 +2116,11 @@ class ChatScreen(Screen):
         from opennote.auth.resolve import resolve_selection
 
         config = AuthConfig()
-        show_all = arg.strip().lower() in ("all", "--all")
+        # With nothing configured yet, show the full catalog so the user can
+        # see what's available to connect.
+        show_all = arg.strip().lower() in ("all", "--all") or not any(
+            resolve_key_source(p.id) != "none" for p in all_providers()
+        )
         lines = []
         for p in all_providers():
             settings = config.get(p.id)
@@ -2139,9 +2153,26 @@ class ChatScreen(Screen):
             except ValueError as e:
                 self.transcript.add_error(str(e))
             return
-        items = [(p.id, f"{p.label} ({p.id})") for p in all_providers()]
-        items.append(("__endpoint__", "Colab / Kaggle endpoint (tunnel URL)"))
-        item_list(self.app, "Connect: provider", items, on_pick=self._on_connect_provider_picked)
+        from opennote.auth.config import AuthConfig
+        from opennote.auth.keychain import resolve_key_source
+
+        cfg = AuthConfig()
+        items = []
+        for p in all_providers():
+            src = resolve_key_source(p.id)
+            settings = cfg.get(p.id)
+            model = settings.model if settings else None
+            tag = "connected" if src != "none" and model else ("key set" if src != "none" else "available")
+            items.append((p.id, f"{p.id:<12} {tag:<10} {model or ''}"))
+        subtitle = "Pick a provider to connect. Keys go to the OS keychain; use /endpoint for custom URLs."
+        item_list(
+            self.app,
+            "Connect provider",
+            items,
+            on_pick=self._on_connect_provider_picked,
+            subtitle=subtitle,
+            hint="type to filter - enter connect - esc cancel",
+        )
 
     def _on_connect_provider_picked(self, pid: Optional[str]) -> None:
         if not pid:
@@ -2217,12 +2248,17 @@ class ChatScreen(Screen):
         from opennote.auth.keychain import resolve_key
 
         if not resolve_key(provider.id):
+            detail = (
+                f"Env: {provider.env_var}  |  keychain: opennote / {provider.id}\n"
+                "Paste a key, or an http(s) endpoint URL for a custom gateway."
+            )
             ask_input(
                 self.app,
                 f"Connect {provider.label}",
-                f"API key for {provider.id} (or set env {provider.env_var}):",
-                placeholder="sk-...",
+                "API key:",
+                placeholder="sk-... or https://...",
                 password=True,
+                detail=detail,
                 on_submit=self._on_connect_key(provider.id),
             )
             return
@@ -2366,12 +2402,15 @@ class ChatScreen(Screen):
         if not models:
             self._finish_connect(provider.id, settings.model if settings else None)
             return
-        items = [(m, m) for m in models]
+        current_model = settings.model if settings else None
+        items = [(m, f"{'* ' if m == current_model else '  '}{m}") for m in models]
         item_list(
             self.app,
-            f"Connect {provider.id}: model",
+            f"Connect {provider.id}: choose model",
             items,
             on_pick=self._on_connect_model_picked(provider.id),
+            subtitle=f"Live models for {provider.label}. * = previously selected.",
+            hint="type to filter - enter select - esc cancel",
         )
 
     def _on_models_result_for_switch(self, msg: ModelsResultMsg) -> None:
@@ -2467,12 +2506,15 @@ class ChatScreen(Screen):
         if not models:
             self.transcript.add_info("No models available.")
             return
-        items = [(m, f"{'* ' if m == current else ''}{m}") for m in models]
+        items = [(m, f"{'* ' if m == current else '  '}{m}") for m in models]
+        subtitle = f"Provider: {provider_id}  |  current: {current or 'none'}"
         item_list(
             self.app,
-            f"Switch model ({provider_id})",
+            "Switch model",
             items,
             on_pick=self._on_model_picked,
+            subtitle=subtitle,
+            hint="type to filter - enter select - esc cancel",
         )
 
     def _on_model_picked(self, model: Optional[str]) -> None:

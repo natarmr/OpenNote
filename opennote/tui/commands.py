@@ -44,6 +44,8 @@ def make_commands(screen) -> List[Command]:
         Command("exit", "Quit the TUI", lambda a: getattr(screen, "app", None) and screen.app.exit(), aliases=("quit", "q"), category="Notebook"),
         Command("clear", "Clear the transcript", _handler(screen, "_clear_transcript"), category="Notebook"),
         Command("model", "Switch LLM provider", _handler(screen, "_switch_provider"), arg_hint="<provider>", category="Provider"),
+        Command("switch-model", "Switch model for the active provider", _handler(screen, "_open_model_dialog"), aliases=("switchmodel",), category="Provider"),
+        Command("endpoint", "Set a custom endpoint URL for a provider", _handler(screen, "_connect_endpoint"), category="Provider"),
         Command("sources", "List indexed sources", _handler(screen, "_list_sources"), category="Notebook"),
         Command("remove", "Remove a source", _handler(screen, "_remove_source"), arg_hint="[source]", category="Notebook"),
         Command("export", "Export the notebook transcript to markdown", _handler(screen, "_export_transcript"), category="Notebook"),

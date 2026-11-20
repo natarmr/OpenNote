@@ -183,12 +183,68 @@ Footer {
 
 #dialog-title {
     text-style: bold;
+    color: $primary;
+    margin-bottom: 1;
+}
+
+#dialog-subtitle {
+    height: auto;
+    margin-bottom: 1;
+}
+
+#dialog-detail {
+    height: auto;
     margin-bottom: 1;
 }
 
 #dialog-body {
     height: auto;
     max-height: 40;
+}
+
+.dialog.picker {
+    width: 78;
+    max-width: 95%;
+}
+
+.dialog.picker #dialog-search {
+    height: 3;
+    border: round $border-subtle;
+    background: $background;
+    margin-bottom: 1;
+}
+
+.dialog.picker #dialog-list {
+    height: 1fr;
+    min-height: 8;
+    max-height: 18;
+    border: round $border-subtle;
+    background: $background;
+}
+
+.dialog.picker #item-list {
+    background: $background;
+}
+
+.dialog.picker ListItem {
+    padding: 0 1;
+}
+
+.dialog.picker ListItem.--highlight {
+    background: $background-element;
+    color: $primary;
+}
+
+.dialog.input-dialog {
+    width: 68;
+    max-width: 92%;
+}
+
+.dialog.input-dialog #dialog-input {
+    height: 3;
+    border: round $primary;
+    background: $background;
+    margin-top: 1;
 }
 
 #dialog-list {

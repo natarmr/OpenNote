@@ -154,8 +154,13 @@ def test_get_client_unknown_provider_raises(configured_auth):
         get_client("nope")
 
 
-def test_default_provider_alphabetical_first(configured_auth, monkeypatch):
-    monkeypatch.setattr(client_mod, "resolve_key", lambda pid: "fake-key")
+def test_default_provider_is_not_alphabetical(configured_auth, monkeypatch):
+    """Default follows last-validated, never alphabetical order."""
+    from opennote.auth.config import AuthConfig
+
+    monkeypatch.setattr("opennote.auth.resolve.resolve_key", lambda pid: "fake-key")
+    cfg = AuthConfig()
+    cfg.mark_validated("groq")
     assert default_provider() == "groq"
 
 

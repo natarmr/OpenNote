@@ -65,7 +65,7 @@ class InfoDialog(_PostMountDialog):
 
 
 class ItemListDialog(_PostMountDialog):
-    """A pick-one modal backed by a ListView.
+    """A polished pick-one modal: searchable, aligned list with a status header.
 
     ``items`` is a list of ``(value, label)`` pairs; dismissing via Enter
     returns the picked ``value`` through ``push_screen(callback=...)``.
@@ -73,35 +73,63 @@ class ItemListDialog(_PostMountDialog):
 
     BINDINGS = [Binding("escape", "dismiss_modal", "Close", show=False)]
 
-    def __init__(self, title: str, items: List[Tuple[str, str]], *args, **kwargs) -> None:
+    def __init__(
+        self,
+        title: str,
+        items: List[Tuple[str, str]],
+        subtitle: str = "",
+        hint: str = "type to filter - up/down move - enter select - esc close",
+        *args,
+        **kwargs,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._title = title
-        self._items = items
+        self._items = list(items)
+        self._subtitle = subtitle
+        self._hint = hint
+        self._visible = list(self._items)
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="dialog", classes="dialog"):
+        with Vertical(id="dialog", classes="dialog picker"):
             yield Label(self._title, id="dialog-title")
+            if self._subtitle:
+                yield Static(self._subtitle, id="dialog-subtitle", classes="muted")
+            yield Input(placeholder="Filter...", id="dialog-search")
             with VerticalScroll(id="dialog-list"):
-                yield ListView(
-                    *[
-                        ListItem(Label(label), id=f"item-{i}")
-                        for i, (_, label) in enumerate(self._items)
-                    ],
-                    id="item-list",
-                )
-            yield Label("up/down pick - enter select - esc close", id="dialog-hint", classes="muted")
+                yield ListView(id="item-list")
+            yield Label(self._hint, id="dialog-hint", classes="muted")
+
+    def _render_items(self, query: str = "") -> None:
+        lv = self.query_one("#item-list", ListView)
+        lv.clear()
+        q = query.strip().lower()
+        self._visible = [
+            (v, lbl)
+            for v, lbl in self._items
+            if not q or _fuzzy_score(q, lbl) >= 0 or q in v.lower()
+        ]
+        for i, (_, label) in enumerate(self._visible):
+            lv.append(ListItem(Label(label), id=f"item-{i}"))
+        if self._visible:
+            lv.index = 0
+            lv.highlighted = 0
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "dialog-search":
+            self._render_items(event.value)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         index = self.query_one("#item-list", ListView).index
-        if index is not None and index < len(self._items):
-            value, _ = self._items[index]
+        if index is not None and index < len(self._visible):
+            value, _ = self._visible[index]
             self.dismiss(value)
 
     def _after_mount(self) -> None:
+        self._render_items()
         self.query_one("#item-list", ListView).focus()
 
     def action_dismiss_modal(self) -> None:
-        self.dismiss()
+        self.dismiss(None)
 
 
 def item_list(
@@ -109,9 +137,11 @@ def item_list(
     title: str,
     items: List[Tuple[str, str]],
     on_pick: Optional[Callable[[Optional[str]], None]] = None,
+    subtitle: str = "",
+    hint: str = "type to filter - up/down move - enter select - esc close",
 ) -> None:
     """Open an ItemListDialog, routing the pick (or None on esc) to *on_pick*."""
-    dialog = ItemListDialog(title, items)
+    dialog = ItemListDialog(title, items, subtitle=subtitle, hint=hint)
     app.push_screen(dialog, callback=on_pick)
 
 
@@ -201,6 +231,7 @@ class InputDialog(_PostMountDialog):
         label: str,
         placeholder: str = "",
         password: bool = False,
+        detail: str = "",
         *args,
         **kwargs,
     ) -> None:
@@ -209,11 +240,14 @@ class InputDialog(_PostMountDialog):
         self._label = label
         self._placeholder = placeholder
         self._password = password
+        self._detail = detail
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="dialog", classes="dialog"):
+        with Vertical(id="dialog", classes="dialog input-dialog"):
             yield Label(self._title, id="dialog-title")
-            yield Label(self._label, id="dialog-body", classes="muted")
+            yield Label(self._label, id="dialog-body")
+            if self._detail:
+                yield Static(self._detail, id="dialog-detail", classes="muted")
             yield Input(
                 placeholder=self._placeholder,
                 password=self._password,
@@ -240,9 +274,10 @@ def ask_input(
     placeholder: str = "",
     password: bool = False,
     on_submit: Optional[Callable[[Optional[str]], None]] = None,
+    detail: str = "",
 ) -> None:
     """Open an InputDialog, routing the value (or None on esc) to *on_submit*."""
-    dialog = InputDialog(title, label, placeholder=placeholder, password=password)
+    dialog = InputDialog(title, label, placeholder=placeholder, password=password, detail=detail)
     app.push_screen(dialog, callback=on_submit)
 
 

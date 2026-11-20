@@ -661,3 +661,13 @@ flow; allow a curated glyph set and colors in the TUI.
 | L215 | MED | TUI connect | Validation exception set esult=None\ then dereferenced \.error\; stale preferred models offered as live | **fixed** | safe error message + explicit offline-list warning | TUI suites |
 | L216 | LOW | TUI connect | Masked key written into transcript; \get_client\ legacy signature crash in tests | **fixed** | no key in transcript; legacy one-arg fallback | TUI suites |
 | L217 | LOW | \config.py\ | \{\}\ substitution and declarative custom providers not supported | **fixed** | env placeholders; \providers:\ block; \uth add --env\; \config --effective\ | \	ests/test_model_resolution.py\ + config |
+
+## Wave 17 - Provider UI rebuild + clean slate (executed)
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L218 | MED | \	ui/dialogs.py:ItemListDialog\ | Pickers were plain unsearchable lists with no context | **fixed** | Searchable picker with status subtitle, aligned columns, highlighted first item | TUI suites |
+| L219 | MED | \	ui/dialogs.py:InputDialog\ | Key prompt showed no env/keychain context; crowded connect chain | **fixed** | Detail panel showing env var + keychain locator; /endpoint split out | TUI suites |
+| L220 | MED | \	ui/commands.py\ | /model switched provider, no model command, endpoint buried | **fixed** | /switch-model + /endpoint added, /connect simplified | command tests |
+| L221 | LOW | \	ests/test_chat_client.py\ | Stale test asserted alphabetical default | **fixed** | Rewritten for last-validated semantics | client tests |
+

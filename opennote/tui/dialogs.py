@@ -6,7 +6,7 @@ from typing import Callable, List, Optional, Tuple
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
-from textual.message import Message
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static, OptionList
 from textual.widgets.option_list import Option
@@ -14,7 +14,37 @@ from textual.widgets.option_list import Option
 from opennote.tui.palette import PaletteEntry, make_palette
 
 
-class InfoDialog(ModalScreen):
+class _PostMountDialog(ModalScreen):
+    """Base for dialogs that touch their own composed children.
+
+    A nested ``with Container(...)`` in ``compose`` defers its children to the
+    *container's* own message pump, so they are not registered yet when this
+    screen runs ``on_mount`` or ``on_screen_resume`` - a ``query_one`` on one
+    raced and raised ``NoMatches``, which kills the app (ledger L185).
+    ``call_after_refresh`` queues behind our own messages but not behind the
+    children's, so this retries until the subtree lands (bounded), and a dialog
+    that genuinely has no child degrades to "nothing focused" instead of a
+    traceback.
+    """
+
+    #: Bounded so a mis-composed dialog cannot spin forever.
+    _POST_MOUNT_TRIES = 30
+
+    def on_mount(self) -> None:
+        self._run_post_mount(0)
+
+    def _run_post_mount(self, attempt: int) -> None:
+        try:
+            self._after_mount()
+        except NoMatches:
+            if attempt < self._POST_MOUNT_TRIES:
+                self.call_after_refresh(self._run_post_mount, attempt + 1)
+
+    def _after_mount(self) -> None:
+        """Override: focus a widget or build content, now that children exist."""
+
+
+class InfoDialog(_PostMountDialog):
     """A dismissible text modal (used by /details, /auth, etc.; /help uses HelpDialog)."""
 
     BINDINGS = [Binding("escape", "dismiss_modal", "Close", show=False)]
@@ -34,7 +64,7 @@ class InfoDialog(ModalScreen):
         self.dismiss()
 
 
-class ItemListDialog(ModalScreen):
+class ItemListDialog(_PostMountDialog):
     """A pick-one modal backed by a ListView.
 
     ``items`` is a list of ``(value, label)`` pairs; dismissing via Enter
@@ -42,11 +72,6 @@ class ItemListDialog(ModalScreen):
     """
 
     BINDINGS = [Binding("escape", "dismiss_modal", "Close", show=False)]
-
-    class Picked(Message):
-        def __init__(self, value: str) -> None:
-            super().__init__()
-            self.value = value
 
     def __init__(self, title: str, items: List[Tuple[str, str]], *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -64,7 +89,7 @@ class ItemListDialog(ModalScreen):
                     ],
                     id="item-list",
                 )
-            yield Label("↑↓ pick · enter select · esc close", id="dialog-hint", classes="muted")
+            yield Label("up/down pick - enter select - esc close", id="dialog-hint", classes="muted")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         index = self.query_one("#item-list", ListView).index
@@ -72,7 +97,7 @@ class ItemListDialog(ModalScreen):
             value, _ = self._items[index]
             self.dismiss(value)
 
-    def on_mount(self) -> None:
+    def _after_mount(self) -> None:
         self.query_one("#item-list", ListView).focus()
 
     def action_dismiss_modal(self) -> None:
@@ -90,7 +115,7 @@ def item_list(
     app.push_screen(dialog, callback=on_pick)
 
 
-class MindmapDialog(ModalScreen):
+class MindmapDialog(_PostMountDialog):
     """In-terminal mind-map viewer: collapsible ASCII tree of an artifact."""
 
     BINDINGS = [Binding("escape", "dismiss_modal", "Close", show=False)]
@@ -112,7 +137,7 @@ class MindmapDialog(ModalScreen):
                 hint = f"{self._short_path}  |  {hint}"
             yield Label(hint, id="dialog-hint", classes="muted")
 
-    def on_mount(self) -> None:
+    def _after_mount(self) -> None:
         from textual.widgets import Tree
 
         tree = self.query_one("#mindmap-tree", Tree)
@@ -136,7 +161,7 @@ class MindmapDialog(ModalScreen):
         self.dismiss()
 
 
-class HelpDialog(ModalScreen):
+class HelpDialog(_PostMountDialog):
     """A dismissible info dialog with an Okay button."""
 
     BINDINGS = [Binding("escape", "dismiss_modal", "Close", show=False),
@@ -153,14 +178,19 @@ class HelpDialog(ModalScreen):
             yield Static(self._body, id="dialog-body")
             yield Button("Okay", id="help-okay", variant="primary")
 
-    def on_mount(self) -> None:
+    def _after_mount(self) -> None:
         self.query_one("#help-okay", Button).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss()
 
+    def action_dismiss_modal(self) -> None:
+        # BINDINGS above routes both Esc and Enter here. Without this method
+        # Textual silently drops the action, leaving Esc unable to close help.
+        self.dismiss()
 
-class InputDialog(ModalScreen):
+
+class InputDialog(_PostMountDialog):
     """A single-line text-input modal (used by /connect for API keys)."""
 
     BINDINGS = [Binding("escape", "dismiss_modal", "Close", show=False)]
@@ -189,9 +219,9 @@ class InputDialog(ModalScreen):
                 password=self._password,
                 id="dialog-input",
             )
-            yield Label("enter confirm · esc close", id="dialog-hint", classes="muted")
+            yield Label("enter confirm - esc close", id="dialog-hint", classes="muted")
 
-    def on_mount(self) -> None:
+    def _after_mount(self) -> None:
         self.query_one("#dialog-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -232,7 +262,7 @@ class ConfirmDialog(ModalScreen):
         with Vertical(id="dialog", classes="dialog"):
             yield Label("Confirm", id="dialog-title")
             yield Static(self._message, id="dialog-body")
-            yield Label("enter yes · esc no", id="dialog-hint", classes="muted")
+            yield Label("enter yes - esc no", id="dialog-hint", classes="muted")
 
     def action_dismiss_yes(self) -> None:
         self.dismiss(True)
@@ -246,13 +276,82 @@ def confirm_dialog(app, message: str, on_confirm: Optional[Callable[[Optional[bo
     app.push_screen(dialog, callback=on_confirm)
 
 
+class PermissionDialog(ModalScreen):
+    """Three-way approval prompt for a tool action.
+
+    Returns one of ``"once"``, ``"always"``, ``"reject"`` to the callback. The
+    worker thread that requested the action blocks on an Event until the UI
+    thread invokes it (see ``ChatScreen._permission_handler``).
+    """
+
+    BINDINGS = [
+        Binding("1", "choose_once", "Allow once", show=True),
+        Binding("2", "choose_always", "Allow always", show=True),
+        Binding("3", "choose_reject", "Reject", show=True),
+        Binding("enter", "choose_once", "Allow once", show=False),
+        Binding("escape", "choose_reject", "Reject", show=False),
+    ]
+
+    def __init__(self, message: str, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog", classes="dialog"):
+            yield Label("Permission required", id="dialog-title")
+            yield Static(self._message, id="dialog-body")
+            yield Static(
+                "[1] allow once   [2] allow always   [3/esc] reject",
+                id="permission-hint",
+                classes="muted",
+            )
+
+    def action_choose_once(self) -> None:
+        self.dismiss("once")
+
+    def action_choose_always(self) -> None:
+        self.dismiss("always")
+
+    def action_choose_reject(self) -> None:
+        self.dismiss("reject")
+
+
 # --------------------------------------------------------------------------- #
 # Command palette
 # --------------------------------------------------------------------------- #
 
-class CommandPalette(ModalScreen):
+def _fuzzy_score(query: str, text: str) -> int:
+    """Subsequence score used by the command palette (opencode-style fuzzy find).
+
+    Returns -1 when *query* is not a subsequence of *text*, otherwise a higher
+    score for prefix matches and adjacent characters. Keeps the old substring
+    behaviour working while making short queries like ``st`` find ``switch
+    theme``.
+    """
+    if not query:
+        return 0
+    q = query.strip().lower()
+    t = text.lower()
+    if q in t:
+        return 100 - t.index(q)  # substring stays the strongest match
+    score = 0
+    qi = 0
+    last = -2
+    for i, ch in enumerate(t):
+        if qi < len(q) and ch == q[qi]:
+            score += 10 if i == 0 or t[i - 1] in " /-_" else 1
+            if i == last + 1:
+                score += 5
+            last = i
+            qi += 1
+            if qi == len(q):
+                return score
+    return -1
+
+
+class CommandPalette(_PostMountDialog):
     """A command-palette modal (opened by Ctrl+P) with a search input and
-    category‑based segregation.
+    category-based segregation.
 
     On start (empty search) all entries are shown grouped by section.
     Typing filters the visible entries (matching title, description, section
@@ -269,13 +368,10 @@ class CommandPalette(ModalScreen):
     def __init__(
         self,
         screen,
-        on_done: Optional[Callable[[Optional[str]], None]] = None,
         *args,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
-        self._screen = screen
-        self._on_done = on_done
         self._entries: List[PaletteEntry] = make_palette(screen)
         # Parallel list mirroring the OptionList options order:
         # None = section header, entry = PaletteEntry for leaf/submenu
@@ -283,12 +379,12 @@ class CommandPalette(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog", classes="dialog"):
-            yield Input(id="palette-input", placeholder="Type to search…")
+            yield Input(id="palette-input", placeholder="Type to search...")
             yield OptionList(id="palette-options")
-            yield Label("↑↓ navigate · enter run · esc close", id="dialog-hint", classes="muted")
+            yield Label("up/down navigate - enter run - esc close", id="dialog-hint", classes="muted")
 
-    def on_mount(self) -> None:
-        """Called just after the screen is pushed – set focus and install filter."""
+    def _after_mount(self) -> None:
+        """Set focus and install the filter - after the subtree is mounted."""
         input_widget = self.query_one("#palette-input", Input)
         input_widget.focus()
         self._refresh("")
@@ -300,10 +396,6 @@ class CommandPalette(ModalScreen):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         """Run the highlighted entry when clicked (or Enter pressed while focused)."""
         self._run_index(event.option_index)
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Fallback Enter handler (when the binding doesn't consume the event)."""
-        self._run_highlighted()
 
     def action_cursor_up(self) -> None:
         self._move_highlight(-1)
@@ -331,17 +423,25 @@ class CommandPalette(ModalScreen):
         ol.clear_options()
         self._matched_entries = []
 
-        # Determine which entries match the filter.
-        matched: List[PaletteEntry] = []
+        # Determine which entries match the filter. Fuzzy subsequence scoring
+        # ranks title matches above description/keyword matches.
+        scored: List[tuple] = []
         for entry in self._entries:
-            title_match = not filter_text or filter_text.lower() in entry.title.lower()
-            desc_match = not filter_text or filter_text.lower() in entry.description.lower()
-            section_match = not filter_text or filter_text.lower() in entry.section.lower()
-            kw_match = not filter_text or any(
-                filter_text.lower() in kw.lower() for kw in entry.keywords.split()
+            if not filter_text:
+                scored.append((0, 0, entry))
+                continue
+            title_score = _fuzzy_score(filter_text, entry.title)
+            desc_score = _fuzzy_score(filter_text, entry.description)
+            section_score = _fuzzy_score(filter_text, entry.section)
+            kw_score = max(
+                [_fuzzy_score(filter_text, kw) for kw in entry.keywords.split()] or [-1]
             )
-            if not filter_text or (title_match or desc_match or section_match or kw_match):
-                matched.append(entry)
+            best = max(title_score, desc_score, section_score, kw_score)
+            if best >= 0:
+                scored.append((best, title_score, entry))
+        if filter_text:
+            scored.sort(key=lambda item: (-item[0], -item[1]))
+        matched = [entry for _, _, entry in scored]
 
         if not matched:
             ol.add_options(["No matching entries"])
@@ -358,7 +458,7 @@ class CommandPalette(ModalScreen):
             sections[entry.section].append(entry)
 
         for section in order:
-            ol.add_option(Option(f"—— {section} ——", disabled=True))
+            ol.add_option(Option(f"-- {section} --", disabled=True))
             self._matched_entries.append(None)
             for entry in sections[section]:
                 display = f"**{entry.title}**  {entry.description}"

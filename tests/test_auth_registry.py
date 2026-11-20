@@ -5,7 +5,7 @@ from opennote.auth.registry import PROVIDERS, all_providers, get_provider
 
 def test_all_six_expected_providers_present():
     ids = {p.id for p in PROVIDERS}
-    assert ids == {"anthropic", "openai", "opencode", "cerebras", "groq", "google"}
+    assert ids == {"anthropic", "openai", "opencode", "cerebras", "groq", "google", "meta"}
 
 
 def test_registry_integrity():

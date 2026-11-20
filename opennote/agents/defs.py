@@ -48,6 +48,10 @@ class AgentDef:
     permission: Dict = field(default_factory=dict)
     source_path: Optional[Path] = None
     hidden: bool = False
+    #: Optional hard cap on model steps (opencode frontmatter ``steps:``).
+    steps: Optional[int] = None
+    #: Optional UI color (six-digit hex), used by the TUI agent indicator.
+    color: Optional[str] = None
 
 
 def _parse_agent_file(path: Path) -> AgentDef:
@@ -104,6 +108,21 @@ def _parse_agent_file(path: Path) -> AgentDef:
 
     hidden = bool(fm.get("hidden", False))
 
+    steps = fm.get("steps")
+    if steps is not None:
+        try:
+            steps = int(steps)
+        except (TypeError, ValueError):
+            raise ValueError(f"{path}: steps must be an integer")
+        if steps < 1 or steps > 50:
+            raise ValueError(f"{path}: steps must be between 1 and 50")
+
+    color = fm.get("color")
+    if color is not None:
+        color = str(color).strip()
+        if not re.match(r"^#[0-9a-fA-F]{6}$", color):
+            raise ValueError(f"{path}: color must be a six-digit hex value")
+
     return AgentDef(
         name=name,
         description=str(desc).strip(),
@@ -114,6 +133,8 @@ def _parse_agent_file(path: Path) -> AgentDef:
         permission=dict(perm),
         source_path=path,
         hidden=hidden,
+        steps=steps,
+        color=color,
     )
 
 
@@ -180,6 +201,29 @@ class AgentRegistry:
                     reg._by_name[agent.name] = agent
             except OSError:
                 continue
+
+        # opennote.json ``agents:`` overrides merge on top of file agents.
+        try:
+            from opennote.config import get_config
+
+            for name, override in (get_config().agents or {}).items():
+                agent = reg._by_name.get(str(name).lower())
+                if agent is None or not isinstance(override, dict):
+                    continue
+                for field in ("description", "prompt", "model", "color"):
+                    if field in override and override[field] is not None:
+                        setattr(agent, field, str(override[field]))
+                if "steps" in override:
+                    try:
+                        agent.steps = int(override["steps"])
+                    except (TypeError, ValueError):
+                        pass
+                if "permission" in override and isinstance(override["permission"], dict):
+                    merged = dict(agent.permission)
+                    merged.update(override["permission"])
+                    agent.permission = merged
+        except Exception:
+            pass
         return reg
 
     def list(self, mode: Optional[str] = None) -> List[AgentDef]:

@@ -1,4 +1,7 @@
 """Theme palette tests: tint blending, variables, Textual Theme mapping."""
+import re
+from pathlib import Path
+
 from textual.theme import Theme
 
 from opennote.tui.theme import DARK, LIGHT, Palette, _tint
@@ -26,14 +29,12 @@ def test_shadow_is_quarter_blend():
         error="#e06c75",
         warning="#f5a742",
         success="#7fd88f",
-        info="#56b6c2",
         text="#eeeeee",
         text_muted="#808080",
         background="#0a0a0a",
         background_panel="#141414",
         background_element="#1e1e1e",
         border="#484848",
-        border_active="#606060",
         border_subtle="#3c3c3c",
     )
     assert p.shadow == _tint(p.background, p.text, 0.25)
@@ -47,10 +48,28 @@ def test_variables_cover_opencode_names():
         "text-muted",
         "background-element",
         "background-panel",
-        "border-active",
         "border-subtle",
     ):
         assert key in vars_ and vars_[key].startswith("#")
+
+
+def test_every_css_variable_used_is_defined():
+    """Every ``$name`` the stylesheet references must be a real palette token.
+
+    Guards the other direction from the dead-token sweep: a typo'd or removed
+    token fails loudly at parse time otherwise. (Tokens like ``$error`` are
+    referenced by Textual's own built-in widget CSS, not by this file, so they
+    are legitimately absent here.)
+    """
+    css = (Path(__file__).resolve().parents[1] / "opennote" / "tui" / "app.py").read_text(
+        encoding="utf-8"
+    )
+    defined = set(DARK.variables()) | {
+        # Provided by the App's own theme registration, not via variables().
+        "block-cursor-text-style",
+    }
+    for used in set(re.findall(r"\$([a-z][a-z0-9-]*)", css)):
+        assert used in defined, used
 
 
 def test_to_textual_maps_fields():

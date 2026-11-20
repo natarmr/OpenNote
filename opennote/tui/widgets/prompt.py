@@ -2,7 +2,7 @@
 
 Layout (bottom of the screen):
     | (left border, colored by the current mode)
-    | Ask anything... "<example>"
+    | Ask anything...
     | Ask | gpt-oss-120b groq
     | Searching sources... round 2/5        esc interrupt
 
@@ -25,14 +25,6 @@ from opennote.tui.widgets.command_popup import CommandPopup
 
 #: Modes the Tab key cycles through, in order.
 MODES = ("ask", "search", "studio")
-
-#: Random-ish placeholder examples for a fresh session.
-PLACEHOLDER_EXAMPLES = [
-    "What are the key findings?",
-    "Summarize the meeting notes.",
-    "Compare the two approaches.",
-    "What does the data say about Q3?",
-]
 
 MODE_LABELS = {"ask": "Ask", "search": "Search", "studio": "Studio"}
 
@@ -98,9 +90,6 @@ class PromptInput(TextArea):
             self.post_message(self.Submitted(self.text))
             return
         await super()._on_key(event)
-
-    def on_mount(self) -> None:
-        pass
 
 
 class PromptBar(Widget):

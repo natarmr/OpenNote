@@ -95,16 +95,16 @@ def append_messages(notebook, messages: List[Dict]) -> List[Dict]:
 
 def history_for_prompt(messages: List[Dict]) -> List[Dict]:
     """Wrap derived messages as <source> data for next prompt (never as instructions)."""
-    from opennote.security.delimit import escape_source_content
+    from opennote.security.delimit import render_delimited_block
 
     out: List[Dict] = []
     for m in messages:
         prov = m.get("provenance", "derived" if m.get("role") != "user" else "trusted")
         content = m.get("content", "")
         if isinstance(content, str) and prov == "derived":
-            # Wrap derived content as citable data. This replays whole prior tool
-            # payloads, so it must defuse every tag spelling, not just `</source>`.
-            wrapped = f'<source provenance="derived">\n{escape_source_content(content)}\n</source>'
+            # Wrap derived content as citable data. Shared renderer escapes every
+            # tag spelling, so a replayed tool payload cannot close its own block.
+            wrapped = render_delimited_block("source", 'provenance="derived"', content)
             nm = dict(m)
             nm["content"] = wrapped
             out.append(nm)

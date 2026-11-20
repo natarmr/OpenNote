@@ -147,14 +147,36 @@ PROVIDERS: List[Provider] = [
             "gemini-2.5-flash-preview-tts",
         ),
     ),
+    Provider(
+        id="meta",
+        label="Meta",
+        flavor="openai",
+        base_url="https://api.meta.ai/v1",
+        models_url="https://api.meta.ai/v1/models",
+        env_var="MODEL_API_KEY",
+        console_url="https://dev.meta.ai/",
+        preferred_models=(
+            "muse-spark-1.3",
+            "muse-spark-1.2",
+            "muse-spark-1.1",
+            "muse-wonder-1.0",
+            "muse-ember-1.0",
+            "muse-spark-1.3-contributor",
+            "muse-spark-1.2-contributor",
+        ),
+    ),
 ]
 
 BY_ID: Dict[str, Provider] = {p.id: p for p in PROVIDERS}
 
+# Alias so the original "muse" request also resolves to Meta's API.
+_ALIASES: Dict[str, str] = {"muse": "meta"}
+
 
 def get_provider(provider_id: str) -> Provider:
+    pid = _ALIASES.get(provider_id, provider_id)
     try:
-        return BY_ID[provider_id]
+        return BY_ID[pid]
     except KeyError:
         available = ", ".join(p.id for p in PROVIDERS)
         raise ValueError(

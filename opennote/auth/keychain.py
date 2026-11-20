@@ -21,6 +21,16 @@ class KeychainError(RuntimeError):
     """Raised when the OS keychain is unavailable or a store fails."""
 
 
+#: Last backend read/delete failure. A warning routed to ``opennote``'s logger
+#: is invisible under the TUI (NullHandler), so callers can surface this on the
+#: result instead of silently reporting "no key" when the backend is broken.
+_last_backend_error: Optional[str] = None
+
+
+def last_backend_error() -> Optional[str]:
+    return _last_backend_error
+
+
 def _backend_available() -> bool:
     try:
         keyring.get_keyring()
@@ -30,6 +40,7 @@ def _backend_available() -> bool:
 
 
 def set_key(provider_id: str, api_key: str) -> None:
+    provider_id = _canonical_id(provider_id)
     provider = get_provider(provider_id)
     if not _backend_available():
         raise KeychainError(
@@ -45,9 +56,13 @@ def set_key(provider_id: str, api_key: str) -> None:
 
 
 def get_key(provider_id: str) -> Optional[str]:
+    global _last_backend_error
     try:
-        return keyring.get_password(SERVICE, provider_id)
+        value = keyring.get_password(SERVICE, provider_id)
+        _last_backend_error = None
+        return value
     except Exception as exc:  # noqa: BLE001
+        _last_backend_error = str(exc)
         import logging
 
         logging.getLogger("opennote.auth.keychain").warning(
@@ -76,13 +91,32 @@ def has_key(provider_id: str) -> bool:
     return get_key(provider_id) is not None
 
 
+def _canonical_id(provider_id: str) -> str:
+    try:
+        from opennote.auth.registry import _ALIASES  # type: ignore[attr-defined]
+
+        return _ALIASES.get(provider_id, provider_id)
+    except Exception:
+        return provider_id
+
+
 def resolve_key(provider_id: str) -> Optional[str]:
     """Resolve a provider key: keychain first, then environment variable."""
-    provider = get_provider(provider_id)
-    from_keychain = get_key(provider_id)
-    if from_keychain:
-        return from_keychain
-    return os.environ.get(provider.env_var) or None
+    cid = _canonical_id(provider_id)
+    provider = get_provider(cid)
+    # Check keychain for canonical id and for the raw alias (so either storage works).
+    for pid in (cid, provider_id) if cid != provider_id else (cid,):
+        if (val := get_key(pid)):
+            return val
+    if provider.env_var and (val := os.environ.get(provider.env_var)):
+        return val
+    # Meta's docs use MODEL_API_KEY but users often set META_API_KEY or
+    # MUSE_API_KEY — accept either without requiring a separate provider.
+    if cid == "meta":
+        for alt in ("META_API_KEY", "MUSE_API_KEY"):
+            if alt != provider.env_var and (val := os.environ.get(alt)):
+                return val
+    return None
 
 
 def mask_key(api_key: str, keep: int = 4) -> str:

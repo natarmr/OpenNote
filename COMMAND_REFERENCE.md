@@ -51,12 +51,27 @@ palette.
 ### Appearance
 | Command | Usage | Description |
 |---------|-------|-------------|
-| `/theme` `<dark\|light>` | `/theme light` | Switch dark/light theme |
+| `/theme` `<name>` | `/theme tokyonight` | Switch theme: `opencode`, `opencode-light`, `tokyonight`, `catppuccin`, `gruvbox` |
 
 ### General
 | Command | Usage | Description |
 |---------|-------|-------------|
 | `/palette` | `/palette` | Open the command palette (Ctrl+P) |
+| `/capabilities` | `/capabilities` | Show enabled providers, skills, plugins and agents |
+
+---
+
+## Keybindings
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Cycle ask → search → studio |
+| `Ctrl+P` | Command palette (fuzzy search) |
+| `F1` | Help |
+| `Esc` | Interrupt the running turn |
+| `Ctrl+Q` | Quit |
+
+UI keybinds and the default theme can be set in `opennote.json` (see the README).
 
 ### Local (Offline GGUF)
 | Command | Usage | Description |
@@ -122,8 +137,8 @@ The palette is an searchable list with category sections. You can:
 |-----|--------|
 | `Ctrl+P` | Open command palette |
 | `Tab` | Cycle modes: Ask → Search → Studio → Ask |
-| `Ctrl+C` / `Ctrl+Q` | Quit the TUI |
-| `Escape` | Interrupt / dismiss current modal |
+| `Ctrl+Q` / `/exit` | Quit the TUI (asks for confirmation while a turn is running) |
+| `Escape` | Interrupt (press twice) / dismiss current modal |
 | `Ctrl+P` + type + `Enter` | Run palette highlighted entry |
 | `Ctrl+P` + `Esc` | Dismiss palette |
 
@@ -155,8 +170,8 @@ The palette is an searchable list with category sections. You can:
 - Shift+Enter adds a newline within the prompt.
 
 ### 6. Help & Shortcuts
-- `/help` → modal dialog with "Press Ctrl+P to see all available actions and commands in any context."
+- `/help` → modal dialog listing every command, grouped by category.
 - `Ctrl+P` → full palette with searchable entries and keyboard navigation.
 
 ---
-*Generated from the OpenNote TUI codebase (336/336 tests passing).*
+*Generated from the OpenNote TUI codebase (665/665 tests passing).*

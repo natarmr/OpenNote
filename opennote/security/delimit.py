@@ -98,6 +98,21 @@ def render_worker_answers(answers: Sequence[str], tag: str = "worker-answer") ->
     return "\n\n".join(parts)
 
 
+def render_tool_output(text: str, tool_name: str = "") -> str:
+    """Frame free-form tool output (skill scripts, plugin tools, task replies).
+
+    These return plain strings that previously reached the model verbatim,
+    skipping the ``<source>`` delimiter entirely. They get their own tag
+    namespace and both their own tag and ``source`` are defused, so a script or
+    subagent cannot close a source block or forge a citable chunk.
+    """
+    name = re.sub(r"[^a-z0-9_-]", "", str(tool_name).lower()) or "tool"
+    tag = f"tool-output-{name}"[:40]
+    body = escape_delimited(str(text), "source")
+    body = escape_delimited(body, tag)
+    return f'<{tag} tool="{_escape_attr(tool_name)}">\n{body}\n</{tag}>'
+
+
 def render_source_block(
     idx: int,
     citation: str,

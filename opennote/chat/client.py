@@ -442,7 +442,20 @@ class AnthropicClient(LLMClient):
 
 
 def default_provider() -> str:
-    """First configured provider with a key and a selected model (alphabetical)."""
+    """Configured default provider, else first keyed provider (alphabetical)."""
+    try:
+        from opennote.config import get_config
+
+        preferred = get_config().provider
+    except Exception:
+        preferred = None
+    if preferred:
+        pid = preferred.split("/", 1)[0].strip().lower()
+        try:
+            get_provider(pid)
+            return pid
+        except Exception:
+            pass
     config = AuthConfig()
     from opennote.auth.local import get_active as _ga
 
@@ -462,8 +475,12 @@ def default_provider() -> str:
     )
 
 
-def get_client(provider_id: str) -> LLMClient:
-    """Build the client for ``provider_id`` using keychain/env key + stored model."""
+def get_client(provider_id: str, model: Optional[str] = None) -> LLMClient:
+    """Build the client for ``provider_id`` using keychain/env key + stored model.
+
+    ``model`` overrides the stored default when supplied (used by agent
+    frontmatter ``model: provider/model`` overrides).
+    """
     provider = get_provider(provider_id)
     if provider.flavor == "local":
         # Local GGUF model — no API key required; model path stored in local config.
@@ -490,9 +507,23 @@ def get_client(provider_id: str) -> LLMClient:
             f"No API key for {provider.label}. Run 'opennote auth add {provider_id}', "
             f"or set the {provider.env_var} environment variable."
         )
+    if model is None:
+        try:
+            from opennote.config import get_config
+
+            default = get_config().model
+            if default:
+                if "/" in default:
+                    cprov, cmodel = default.split("/", 1)
+                    if cprov.strip().lower() == provider_id:
+                        model = cmodel.strip()
+                else:
+                    model = default.strip()
+        except Exception:
+            pass
     config = AuthConfig()
     settings = config.get(provider_id)
-    model = settings.model if settings else None
+    model = model or (settings.model if settings else None)
     if not model:
         raise ChatError(
             f"No model selected for {provider.label}. Run 'opennote auth models {provider_id}'."

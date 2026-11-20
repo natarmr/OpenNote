@@ -244,17 +244,10 @@ def _track_usage(system, messages, answer, client, chunks, notebook) -> "Context
         usage = summarize(system, messages, answer, model=model, chunks=chunks, provider_usage=provider_usage)
         nb_dir = getattr(notebook, "directory", None)
         usage.session_spent = record_spent(usage.cost, nb_dir)
-        try:
-            from opennote.context_meter import load_spent as _ls
-
-            usage.session_tokens = usage.total  # per-turn fill; spend accumulates separately
-        except Exception:
-            pass
         log_turn(usage, where="ask")
         return usage
     except Exception as exc:
         _log.warning("context metering failed: %s", exc)
-        return None
         return None
 
 

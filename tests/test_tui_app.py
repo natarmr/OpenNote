@@ -148,10 +148,11 @@ async def test_slash_help_opens_dialog(tmp_path):
 
         assert isinstance(app.screen, HelpDialog)
         body = app.screen.query_one("#dialog-body")
-        assert (
-            "Press ctrl+p to see all available actions and commands in any context."
-            in body.render().plain
-        )
+        # The real categorised command list, not a "press ctrl+p" pointer
+        # (ledger L190 - help_text was dead code kept alive only by a test).
+        plain = body.render().plain
+        for expected in ("/help", "/ingest", "/notebooks", "/context", "Studio"):
+            assert expected in plain, expected
         assert app.screen.query_one("#help-okay", Button) is not None
         await pilot.press("enter")
         await pilot.pause()
@@ -393,6 +394,22 @@ async def test_interrupt_cancels_blocked_turn(tmp_path):
         assert "Interrupted" in _transcript_text(transcript)
 
 
+async def test_f1_help_closes_with_escape(tmp_path):
+    """F1 opens help; Esc must return to the chat screen (regression)."""
+    from opennote.tui.dialogs import HelpDialog
+
+    app = await _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert type(app.screen).__name__ == "ChatScreen"
+        await pilot.press("f1")
+        await pilot.pause()
+        assert isinstance(app.screen, HelpDialog)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert type(app.screen).__name__ == "ChatScreen"
+
+
 async def test_unknown_provider_shows_error_notice(tmp_path):
     app = OpenNoteApp(
         notebook_name="t",
@@ -460,10 +477,8 @@ async def test_slash_popup_enter_selects_highlighted(tmp_path):
 
         assert isinstance(app.screen, HelpDialog)
         body = app.screen.query_one("#dialog-body")
-        assert (
-            "Press ctrl+p to see all available actions and commands in any context."
-            in body.render().plain
-        )
+        plain = body.render().plain
+        assert "/ingest" in plain and "/context" in plain
         assert app.screen.query_one("#help-okay", Button) is not None
         await pilot.press("enter")
         await pilot.pause()
@@ -584,7 +599,7 @@ async def test_palette_filter_runs_studio_mode(tmp_path):
         await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
-        from opennote.tui.dialogs import CommandPalette, ItemListDialog
+        from opennote.tui.dialogs import CommandPalette
 
         assert isinstance(app.screen, CommandPalette)
         await pilot.press(*"studio mode")
@@ -593,10 +608,13 @@ async def test_palette_filter_runs_studio_mode(tmp_path):
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        # Studio Mode enters studio and opens the generator picker
-        assert isinstance(app.screen, ItemListDialog)
-        await pilot.press("escape")
-        await pilot.pause()
+        # Studio Mode only switches mode - the generator menu is for when you
+        # have a topic, so Tab/ctrl+p into studio does not ambush you with a
+        # modal (ledger L191).
+        from opennote.tui.screens.chat import ChatScreen
+
+        assert isinstance(app.screen, ChatScreen)
+        assert app.screen.mode == "studio"
 
 
 async def test_theme_command_switches_palette(tmp_path):

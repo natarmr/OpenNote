@@ -3,7 +3,7 @@
 ## Commands
 
 - No `python` on PATH — only `py`. `opennote.exe` is installed, so bare `opennote` works; fallback `py -m opennote ...` / `py -m pytest ...`
-- Full suite: `py -m pytest -q` — **641 tests, ~3.2 min**. Focused: `py -m pytest tests/<file>.py -q`
+- Full suite: `py -m pytest -q` — **665 tests, ~4 min**. Focused: `py -m pytest tests/<file>.py -q`
 - No mypy, no CI, no pre-commit, no `opencode.json`. `py -m py_compile` touched files instead
 - Lint: `py -m ruff check <touched-files>` — **no ruff config and ~200 pre-existing findings** in files like `chat/ask.py`. House style is `List[]`/`Optional[]`/`except Exception`, which ruff dislikes. So *count* findings before and after (`--statistics`) and keep the delta at zero; do not "fix" house style to satisfy ruff
 - Order that matters: `py_compile` → focused `pytest` → full `pytest` → ruff delta
@@ -34,7 +34,7 @@
 - No `temperature` is set on any provider call. Answer variance across runs is model sampling, not retrieval — don't go hunting for a retrieval bug
 - `opennote/cli.py:app` is the Typer entry; bare `opennote` with no subcommand launches the TUI; `opennote/__main__.py` enables `py -m opennote`
 - `agents/loop.py:agent_turn` — multi-round tool loop; `ToolContext` decouples tools from `Retriever`
-- TUI (`opennote/tui/`): Tab cycles `ask→search→studio`; commands in `tui/commands.py` (see `COMMAND_REFERENCE.md`); chrome is **ASCII-only**; sidebar hides below `SIDEBAR_MIN_WIDTH = 112`
+- TUI (`opennote/tui/`): Tab cycles `ask→search→studio`; commands in `tui/commands.py` (see `COMMAND_REFERENCE.md`); chrome uses a **curated glyph set** (`◆ ● ✗ › … ·`) plus colors — `tests/test_tui_audit_fixes.py::test_tui_chrome_strings_are_ascii` pins exactly those and bans everything else; sidebar hides below `SIDEBAR_MIN_WIDTH = 112`
 
 ## Env vars that change behaviour
 
@@ -43,7 +43,7 @@
 ## Conventions
 
 - Match file-local style over ruff ideals. TUI code catches `Exception` broadly by design
-- **`ledger.md`** gets one row per fix (`| L<n> | SEV | location | ... |`) — **next is L184**. **`engg_choices.md`** gets one per design call (`## E<n>`) — **next is E27**
+- **`ledger.md`** gets one row per fix (`| L<n> | SEV | location | ... |`) — **next is L210**. **`engg_choices.md`** gets one per design call (`## E<n>`) — **next is E29**
 - `security/scan.py` is *telemetry, not a gate*, so the `<source>` delimiter plus an explicit prompt rule is the whole prompt-injection defense. Every template in `prompt_templates/` that receives retrieved text must state the data-not-instructions rule; `security/test_prompt_injection_rule.py` enforces this and classifies every template deliberately
 - **A silent fallback is a bug, not graceful degradation.** A `logger.warning` proves nothing: the TUI pins the `opennote` logger to `WARNING` with a `NullHandler`. Where a feature can degrade, assert on the *result* so a permanently dead path cannot look healthy — the Tavily enrichment fetch had been dead for its whole life behind an `except Exception` and nobody noticed
 - **Do not tune `_TEXT_SUPPORT_THRESHOLD` from `tests/security/test_grounding_calibration.py`.** That corpus is an adversarial boundary probe, not a sample; it once looked like a 50% false-drop rate. Measure with `py scripts/measure_grounding.py --notebook notebook-1 --provider groq`, which costs LLM calls. Current value 0.6 is measured, not guessed

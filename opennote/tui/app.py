@@ -12,10 +12,6 @@ from opennote.tui.screens.chat import ChatScreen
 from opennote.tui.theme import DEFAULT, Palette
 
 CSS = """
-Screen {
-    background: $background;
-}
-
 ChatScreen {
     align: center middle;
 }
@@ -36,17 +32,32 @@ ChatScreen {
     align-horizontal: center;
 }
 
+Screen {
+    background: $background;
+}
+
+.muted {
+    color: $text-muted;
+}
+
+.hint {
+    color: $text-muted;
+    text-style: italic;
+}
+
+Footer {
+    background: $background-panel;
+    color: $text-muted;
+    height: 1;
+}
+
 #prompt-box {
     border-left: round $primary;
     height: auto;
     padding: 1 2;
     background: $background-element;
-    width: 80;
-    max-width: 100%;
-}
-
-ChatScreen.has-history #prompt-box {
     width: 100%;
+    max-width: 100%;
 }
 
 #prompt-input {
@@ -61,12 +72,8 @@ ChatScreen.has-history #prompt-box {
 #meta-row {
     height: 1;
     align-horizontal: left;
-    width: 80;
-    max-width: 100%;
-}
-
-ChatScreen.has-history #meta-row {
     width: 100%;
+    max-width: 100%;
 }
 
 #meta-sep {
@@ -88,12 +95,8 @@ ChatScreen.has-history #meta-row {
 #status-row {
     height: 1;
     align-horizontal: left;
-    width: 80;
-    max-width: 100%;
-}
-
-ChatScreen.has-history #status-row {
     width: 100%;
+    max-width: 100%;
 }
 
 #status-spinner {
@@ -204,38 +207,43 @@ ChatScreen.has-history #status-row {
     margin-top: 1;
 }
 
-#welcome-logo {
-    width: auto;
-    height: auto;
+/* --- Transcript polish ------------------------------------------------- */
+.role-user {
+    color: $primary;
+    text-style: bold;
 }
 
-#welcome-tip {
-    width: auto;
-    height: auto;
+.role-assistant {
+    color: $secondary;
+    text-style: bold;
+}
+
+.answer-header {
     color: $text-muted;
+}
+
+.chip-error {
+    color: $error;
+    text-style: bold;
+}
+
+.chip-info {
+    color: $secondary;
+}
+
+.chip-success {
+    color: $success;
+}
+
+.code-block {
+    background: $background-panel;
+    color: $text;
+    padding: 0 1;
+}
+
+#permission-hint {
+    color: $warning;
     margin-top: 1;
-}
-
-ChatScreen.has-history #welcome-logo,
-ChatScreen.has-history #welcome-tip {
-    display: none;
-}
-
-#footer-bar {
-    dock: bottom;
-    width: 100%;
-    height: 1;
-    padding: 0 2 1 2;
-}
-
-#footer-path {
-    color: $text-muted;
-}
-
-#footer-version {
-    color: $text-muted;
-    width: 1fr;
-    text-align: right;
 }
 """
 
@@ -294,9 +302,16 @@ class OpenNoteApp(App):
 
 def main(notebook: Optional[str] = None, light: bool = False) -> None:
     """Launch the TUI (console-script entry point for bare ``opennote``)."""
-    from opennote.tui.theme import LIGHT
+    from opennote.config import get_config
+    from opennote.tui.theme import LIGHT, by_name
 
-    palette = LIGHT if light else DEFAULT
+    configured = get_config().theme
+    if light:
+        palette = LIGHT
+    elif configured:
+        palette = by_name(configured)
+    else:
+        palette = DEFAULT
     OpenNoteApp(notebook_name=notebook, palette=palette).run()
 
 

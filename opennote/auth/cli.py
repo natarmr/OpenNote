@@ -93,8 +93,14 @@ def auth_add(
 @auth_app.command("list")
 def auth_list():
     """List configured providers, key source, and selected models."""
+    from opennote.auth.keychain import last_backend_error
+
     config = AuthConfig()
     providers = config.providers()
+    backend_error = last_backend_error()
+    if backend_error:
+        typer.echo(f"Warning: OS keychain backend failed: {backend_error}", err=True)
+        typer.echo("Keys from the environment still work; storing new keys will fail.", err=True)
     if not providers:
         typer.echo("No providers configured. Run 'opennote auth add <provider>'.")
         return

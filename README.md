@@ -155,6 +155,37 @@ Keys stored in the OS keychain when available, else read from `ANTHROPIC_API_KEY
 - **Retrieval** is always available (local embeddings + ChromaDB)
 
 ---
+## ⚙️ Configuration (`opennote.json`)
+
+All non-secret settings live in one layered JSON/JSONC file. Keys stay in the OS
+keychain (see `opennote auth`); `auth.json` keeps only provider→model mappings.
+
+```jsonc
+// ~/.opennote/opennote.json           (global)
+// <project>/opennote.json             (project)
+// <project>/.opennote/opennote.json   (project-local, highest precedence)
+{
+  "model": "groq/qwen/qwen3.8-27b",  // optional default, overrides auth.json
+  "provider": "groq",
+  "default_agent": "ask",
+  "theme": "tokyonight",             // opencode|opencode-light|tokyonight|catppuccin|gruvbox
+  "keybinds": { "leader": "ctrl+x" },
+  "retrieval": { "top_k": null, "bm25": true, "bm25_alpha": 0.5, "context_budget": 12000 },
+  "permissions": [
+    { "action": "script", "resource": "*", "effect": "ask" },
+    { "action": "plugin", "resource": "*", "effect": "deny" },
+    { "action": "webfetch", "resource": "*.internal", "effect": "deny" }
+  ]
+}
+```
+
+Permissions are ordered; the **last matching rule wins**. Effects are `allow`,
+`deny` and `ask`. `ask` opens an approval prompt in the TUI (`1` once · `2`
+always · `3`/`esc` reject) or in the chat REPL; "always" persists a project rule.
+Agents may narrow permissions further in their frontmatter `permission:` block.
+Run `opennote config` to see the resolved config or `opennote config --path` to
+see which files are loaded.
+
 ---
 
 ## 🛤 Roadmap (future)

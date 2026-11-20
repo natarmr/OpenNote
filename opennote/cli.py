@@ -79,6 +79,18 @@ for _stream in (sys.stdout, sys.stderr, sys.stdin):
             pass
 
 
+def cli_permission_handler(request) -> str:
+    """Interactive ``ask`` resolver for the terminal chat REPL."""
+    typer.echo("\nPermission required:")
+    typer.echo(request.describe())
+    typer.echo("  [1] allow once   [2] allow always   [3] reject")
+    try:
+        choice = typer.prompt("Choice", default="1", show_choices=False).strip()
+    except (EOFError, KeyboardInterrupt):
+        return "reject"
+    return {"1": "once", "2": "always", "3": "reject"}.get(choice, "reject")
+
+
 def _notebook(name: Optional[str], create_if_missing: bool = False) -> Notebook:
     # Explicit name
     if name:
@@ -104,6 +116,24 @@ def _notebook(name: Optional[str], create_if_missing: bool = False) -> Notebook:
     raise typer.BadParameter(
         "No notebooks for this directory. Run 'opennote create <name>' or 'opennote ingest <path>'."
     )
+
+
+@app.command("config")
+def config_cmd(
+    show_path: bool = typer.Option(False, "--path", help="Print config file locations."),
+) -> None:
+    """Show the resolved opennote.json configuration (or its file locations)."""
+    from opennote.config import config_paths, load_config, project_config_path
+
+    if show_path:
+        typer.echo(f"writes to: {project_config_path()}")
+        typer.echo("loaded from (lowest -> highest precedence):")
+        for p in config_paths():
+            typer.echo(f"  {'[x]' if p.is_file() else '[ ]'} {p}")
+        return
+    import json
+
+    typer.echo(json.dumps(load_config().to_dict(), indent=2))
 
 
 @app.command("create")
@@ -528,6 +558,7 @@ def chat_cmd(
                 provider_id=pid,
                 history=history,
                 client=client,
+                permission_handler=cli_permission_handler,
             )
         except Exception as e:
             typer.echo(f"Error: {e}", err=True)
@@ -766,6 +797,7 @@ def _artifacts_check(nb, topic: str) -> None:
     """
     from opennote.artifacts import (
         create_mindmap,
+        frame_studio_context,
         load_artifact,
         make_briefing,
         make_faq,
@@ -783,12 +815,7 @@ def _artifacts_check(nb, topic: str) -> None:
     except ValueError:
         typer.echo("SKIP: no sources indexed yet. Run 'opennote ingest <path>' first.", err=True)
         raise typer.Exit(1)
-    context_parts = []
-    for i, r in enumerate(results, start=1):
-        fn = r.metadata.get("filename", "unknown")
-        chunk = r.content[:800].replace("\n", " ")
-        context_parts.append(f"[{i}] {fn}: {chunk}")
-    context = "\n".join(context_parts) if context_parts else "No context available."
+    context = frame_studio_context(results)
     items = [f"{r.metadata.get('filename', 'unknown')}: {r.content[:60]}" for r in results[:8]]
 
     jobs = [

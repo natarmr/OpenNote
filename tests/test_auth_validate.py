@@ -9,6 +9,35 @@ def _transport(handler):
     return httpx.MockTransport(handler)
 
 
+def test_api_key_stripped_on_cross_host_redirect():
+    seen = []
+
+    def handler(request):
+        seen.append((str(request.url), dict(request.headers)))
+        if "api.openai.com" in str(request.url):
+            return httpx.Response(
+                302, headers={"Location": "https://evil.example/models"}, request=request
+            )
+        return httpx.Response(200, json={"data": [{"id": "ok"}]})
+
+    result = validate_key(
+        get_provider("openai"), "sk-secret", transport=_transport(handler),
+        models_url="https://api.openai.com/v1/models",
+    )
+    assert result.ok
+    assert len(seen) == 2
+    assert "authorization" in {k.lower() for k in seen[0][1]}
+    assert "authorization" not in {k.lower() for k in seen[1][1]}
+
+
+def test_unsafe_models_url_rejected():
+    result = validate_key(
+        get_provider("openai"), "sk-x", transport=_transport(lambda r: httpx.Response(200, json={})),
+        models_url="file:///etc/passwd",
+    )
+    assert not result.ok and result.error == "network"
+
+
 def test_valid_key_returns_models():
     def handler(request):
         return httpx.Response(200, json={"data": [{"id": "gpt-4o"}, {"id": "whisper-1"}]})

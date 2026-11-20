@@ -76,6 +76,10 @@ def _effective_models_url(provider: Provider) -> str:
     return provider.models_url
 
 
+_MAX_REDIRECTS = 5
+_REDIRECT_CODES = (301, 302, 303, 307, 308)
+
+
 def validate_key(
     provider: Provider,
     api_key: str,
@@ -88,14 +92,38 @@ def validate_key(
     ``transport`` is injectable for tests (``httpx.MockTransport``); when None
     a real connection is made. ``models_url`` overrides the provider's
     ``models_url`` (used for tunnel endpoints).
+
+    Redirects are walked manually so the API key is stripped the moment a
+    response sends us to a different host — a custom endpoint or a compromised
+    gateway must never be able to bounce the key to a third party.
     """
+    from urllib.parse import urljoin, urlparse
+
     headers = _headers(provider, api_key.strip())
+    secret_headers = set(headers)
     target_url = models_url or _effective_models_url(provider)
     try:
-        with httpx.Client(
-            transport=transport, timeout=timeout, follow_redirects=True
-        ) as client:
-            response = client.get(target_url, headers=headers)
+        origin = urlparse(target_url).netloc.lower()
+        if urlparse(target_url).scheme not in ("http", "https"):
+            return ValidationResult.network()
+        with httpx.Client(transport=transport, timeout=timeout, follow_redirects=False) as client:
+            for _ in range(_MAX_REDIRECTS + 1):
+                response = client.get(target_url, headers=headers)
+                location = response.headers.get("location")
+                if (
+                    response.status_code in _REDIRECT_CODES
+                    and location
+                ):
+                    next_url = urljoin(target_url, location)
+                    next_origin = urlparse(next_url).netloc.lower()
+                    if urlparse(next_url).scheme not in ("http", "https"):
+                        return ValidationResult.network()
+                    if next_origin != origin:
+                        headers = {k: v for k, v in headers.items() if k not in secret_headers}
+                        origin = next_origin
+                    target_url = next_url
+                    continue
+                break
     except httpx.HTTPError:
         return ValidationResult.network()
 

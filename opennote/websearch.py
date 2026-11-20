@@ -33,6 +33,9 @@ _DEFAULT_TOPIC = "general"
 _DEFAULT_TONE = "balanced"
 _MAX_RESULTS = 5
 _MAX_CONTENT_CHARS = 2000
+#: Hard cap on a downloaded page before parsing — a malicious/hostile host can
+#: otherwise stream gigabytes into memory before trafilatura returns.
+_MAX_DOWNLOAD_CHARS = 2_000_000
 # Typical Tavily key format is "tvly-..." sent via Bearer auth (L42).
 _AUTH_TIMEOUT = 20.0
 # Cap the number of sequential enrichment fetches per web_search call (L47).
@@ -152,6 +155,9 @@ def web_search(query: str, top_k: int = 5) -> List[SearchResult]:
                 # through the same guard as read_page rather than straight to
                 # the fetcher.
                 downloaded = trafilatura.fetch_url(_fetch_guarded(url))
+                if downloaded and len(downloaded) > _MAX_DOWNLOAD_CHARS:
+                    logger.warning("Page too large (%d chars), skipping enrichment: %s", len(downloaded), url)
+                    downloaded = None
                 if downloaded:
                     sections = _extract_sections(downloaded)
                     chunks = _chunk_sections(sections, url, title or url, ChunkSpec())
@@ -382,6 +388,8 @@ def read_page(url: str) -> List[SearchResult]:
     downloaded = trafilatura.fetch_url(_fetch_guarded(url))
     if not downloaded:
         raise RuntimeError(f"Failed to fetch URL: {url}")
+    if len(downloaded) > _MAX_DOWNLOAD_CHARS:
+        raise RuntimeError(f"Page too large ({len(downloaded)} chars): {url}")
 
     sections = _extract_sections(downloaded)
     chunks = _chunk_sections(sections, url, _page_title(url), ChunkSpec())

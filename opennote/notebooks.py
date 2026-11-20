@@ -262,11 +262,6 @@ class NotebookManager:
         atomic_write_json(notebook.meta_file, notebook.to_dict())
         return notebook
 
-    def create_next(self, project: str | None = None, embed_model: str = DEFAULT_EMBED_MODEL) -> Notebook:
-        """Create next auto-numbered notebook for *project*."""
-        name = self.next_notebook_name(project)
-        return self.create(name, embed_model=embed_model, project=project)
-
     def delete(self, name: str):
         validate_notebook_name(name)
         directory = self.notebooks_dir / name

@@ -122,6 +122,10 @@ class ToolContext:
     history: Optional[List[Dict[str, Any]]] = None
     depth: int = 0
     subagent_retrieved: List[SearchResult] = field(default_factory=list)
+    # Permission enforcement (set by agents/loop.py; None = legacy/unchecked)
+    permission_engine: Optional[Any] = None
+    permission_handler: Optional[Any] = None
+    agent_name: str = "ask"
 
     @classmethod
     def from_retriever(cls, retriever: Retriever) -> "ToolContext":
@@ -331,6 +335,15 @@ def _run_skill_script_execute(ctx: ToolContext, skill: str, script: str, args: O
             raise ValueError(f"Argument {a!r} must be a string.")
 
     cmd = [sys.executable, str(target), *args]
+    # A prompt injection can drive a legitimate skill script with hostile argv;
+    # do not hand it the operator's API keys or notebook location as well.
+    sensitive = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH")
+    safe_env = {
+        k: v
+        for k, v in os.environ.items()
+        if not any(word in k.upper() for word in sensitive)
+        and k not in ("OPENNOTE_HOME", "OPENNOTE_CONFIG_HOME")
+    }
     try:
         result = subprocess.run(
             cmd,
@@ -338,6 +351,7 @@ def _run_skill_script_execute(ctx: ToolContext, skill: str, script: str, args: O
             capture_output=True,
             text=True,
             timeout=60,
+            env=safe_env,
         )
     except subprocess.TimeoutExpired:
         raise ValueError(f"Script '{script}' timed out after 60s.")
@@ -427,15 +441,25 @@ def _task_execute(ctx: ToolContext, subagent: str, task: str) -> str:
 
     client = ctx.client
 
+    # Honour the subagent's frontmatter: prompt becomes its system prompt,
+    # model overrides the stored default, steps caps its tool rounds.
+    sub_prompt = agent_def.prompt or None
+    sub_model = agent_def.model
+    sub_rounds = agent_def.steps if agent_def.steps else 3
+
     try:
         result = _agent_turn(
             notebook=notebook,
             question=task,
             retriever=retriever,
             client=client,
-            max_rounds=3,
+            max_rounds=sub_rounds,
             history=[],
             _depth=ctx.depth + 1,
+            agent_name=subagent,
+            system_prompt=sub_prompt,
+            model_override=sub_model,
+            permission_handler=getattr(ctx, "permission_handler", None),
         )
         answer = result.result.answer
         ctx.subagent_retrieved.extend(result.result.results)
@@ -569,6 +593,16 @@ def execute_tool(
     for arg in required:
         if arg not in kwargs:
             raise ValueError(f"Missing required argument '{arg}' for tool {tool_name}")
+
+    # Permission gate: the model can never dispatch a tool the operator has
+    # denied. The engine is injected by agents/loop.py; when absent (direct
+    # calls / legacy tests) behaviour is unchanged. An ``ask`` with no
+    # interactive handler fails closed inside the engine.
+    if tool_name != "submit_grounded_answer" and ctx.permission_engine is not None:
+        from opennote.security.permissions import build_permission_request
+
+        request = build_permission_request(tool_name, kwargs, ctx.agent_name)
+        ctx.permission_engine.require(request)
 
     # Try context-aware dispatch first
     ctx_fn = _CTX_DISPATCH.get(tool_name)

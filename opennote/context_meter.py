@@ -83,8 +83,6 @@ class ContextUsage:
     exact: bool = False
     # cumulative session spend (loaded + updated per turn)
     session_spent: float = 0.0
-    # cumulative session tokens (opencode-style: summed across turns)
-    session_tokens: int = 0
 
     @property
     def total(self) -> int:
@@ -94,23 +92,13 @@ class ContextUsage:
     def pct_used(self) -> float:
         return (self.total / self.limit * 100) if self.limit else 0.0
 
-    def __add__(self, other: "ContextUsage") -> "ContextUsage":
-        return ContextUsage(
-            input_tokens=self.input_tokens + other.input_tokens,
-            output_tokens=self.output_tokens + other.output_tokens,
-            limit=self.limit,
-            cost=self.cost + other.cost,
-            chunks=self.chunks + other.chunks,
-            model=self.model or other.model,
-            exact=self.exact and other.exact,
-            session_spent=self.session_spent,
-            session_tokens=self.session_tokens,
-        )
-
     def render(self) -> str:
+        return f"Context\n{self.render_body()}"
+
+    def render_body(self) -> str:
+        """The lines below the "Context" heading, for panes that draw their own."""
         prefix = "" if self.exact else "~"
         return (
-            f"Context\n"
             f"{prefix}{self.total:,} tokens\n"
             f"{self.pct_used:.0f}% used\n"
             f"${self.session_spent:.2f} spent"

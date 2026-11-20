@@ -1,7 +1,9 @@
 """Right-side status panel (opencode-style): session, context, services.
 
 ASCII only - no box-drawing or unicode symbols (terminal-safe).
-Fixed 32-column width; hidden on narrow screens via CSS media query.
+Fixed 32-column width; hidden on narrow terminals by
+``ChatScreen._fit_sidebar_display`` (below ``SIDEBAR_MIN_WIDTH``), not by CSS -
+and skipped entirely on that path so its slow work never runs.
 """
 from __future__ import annotations
 
@@ -87,7 +89,9 @@ class SideBar(Widget):
 
     def set_usage(self, usage) -> None:
         try:
-            self.context_text = usage.render() if usage is not None else "Context\nno turns yet"
+            # render_body, not render: the block already has a bold "Context"
+            # heading of its own, and render() would repeat it (ledger L187).
+            self.context_text = usage.render_body() if usage is not None else "no turns yet"
         except Exception:
             self.context_text = ""
 

@@ -72,7 +72,23 @@ class SnakeScreen(ModalScreen):
                 classes="muted",
             )
 
+    #: Bounded retry: a nested compose container registers its children from
+    #: its own message pump, which can land after ours (ledger L185).
+    _START_TRIES = 30
+
     def on_mount(self) -> None:
+        self._try_start(0)
+
+    def _try_start(self, attempt: int) -> None:
+        from textual.css.query import NoMatches
+
+        try:
+            self._start()
+        except NoMatches:
+            if attempt < self._START_TRIES:
+                self.call_after_refresh(self._try_start, attempt + 1)
+
+    def _start(self) -> None:
         self._draw()
         self._timer = self.set_interval(0.12, self._tick)
 

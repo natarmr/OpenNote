@@ -86,14 +86,48 @@ async def test_get_retriever_reuses_instance(tmp_path, monkeypatch):
     app = _make_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        first = app.screen._get_retriever(top_k=8)
-        second = app.screen._get_retriever(top_k=8)
+        first = app.screen._get_retriever()
+        second = app.screen._get_retriever()
         assert first is second
         assert len(built) == 1
         app.screen._invalidate_retrievers()
-        third = app.screen._get_retriever(top_k=8)
+        third = app.screen._get_retriever()
         assert third is not first
         assert len(built) == 2
+
+
+async def test_retriever_cache_ignores_top_k(tmp_path, monkeypatch):
+    """One Retriever per notebook, not one per top_k (ledger L190).
+
+    A Retriever owns a Chroma client and a BM25 snapshot, and the call sites ask
+    for 5, 8 and "adaptive" - keying on top_k built one of each.
+    """
+    import opennote.retrieval.retriever as ret_mod
+
+    built = []
+
+    class CountingRet:
+        def __init__(self, nb, **kw):
+            built.append(kw)
+            self.searches = []
+
+        def search(self, query, top_k=None, source=None):
+            self.searches.append(top_k)
+            return []
+
+    monkeypatch.setattr(ret_mod, "Retriever", CountingRet)
+    app = _make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        ret = app.screen._get_retriever()
+        ret.search("q", top_k=5)
+        ret.search("q", top_k=8)
+        # A top_k is never passed to the constructor any more ...
+        assert all("top_k" not in kw for kw in built)
+        # ... and a different top_k must not build a second Retriever.
+        app.screen._start_search("hello")
+        await pilot.pause()
+        assert len(built) == 1
 
 
 # -- /sources worker ----------------------------------------------------------
@@ -187,11 +221,51 @@ async def test_sidebar_services_cached_across_syncs(tmp_path, monkeypatch):
         return real()
 
     monkeypatch.setattr(reg_mod.SkillRegistry, "discover", counting)
-    app = _make_app(tmp_path)
+    # Wide enough for the sidebar to be visible: _sync_sidebar is a no-op when
+    # it is hidden, and at the default 80-column test size it always is.
+    app = OpenNoteApp(
+        notebook_name="t", palette=DARK, manager=_manager(tmp_path),
+        client=_StubClient(), retriever=FakeRetriever(),
+    )
+    async with app.run_test(size=(130, 40)) as pilot:
+        await pilot.pause()
+        app.screen._sync_sidebar(model="m", pid="groq")
+        # The slow sections run in a worker; wait for the cache to be written.
+        for _ in range(120):
+            await pilot.pause()
+            if app.screen._sidebar_slow("services") is not None:
+                break
+        else:
+            raise AssertionError("sidebar slow sections never populated the cache")
+        first = len(calls)
+        assert first, "skills were never discovered"
+        app.screen._sync_sidebar(model="m", pid="groq")
+        for _ in range(20):
+            await pilot.pause()
+        # A second sync must add zero discovery work (the TTL cache hit).
+        assert len(calls) == first
+        # And no extra worker is left in flight.
+        assert app.screen._sidebar_slow_pending is False
+
+
+async def test_sidebar_skips_slow_work_when_hidden(tmp_path, monkeypatch):
+    """A hidden sidebar must not walk the FS, import plugins, or shell out."""
+    import opennote.skills.registry as reg_mod
+
+    calls = []
+    real = reg_mod.SkillRegistry.discover
+
+    @classmethod
+    def counting(cls, cwd=None):
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(reg_mod.SkillRegistry, "discover", counting)
+    app = _make_app(tmp_path)  # default 80 cols -> sidebar hidden
     async with app.run_test() as pilot:
         await pilot.pause()
+        assert app.screen.query_one("#sidebar").display is False
         app.screen._sync_sidebar(model="m", pid="groq")
-        await pilot.pause()
-        app.screen._sync_sidebar(model="m", pid="groq")
-        await pilot.pause()
-        assert len(calls) == 1
+        for _ in range(20):
+            await pilot.pause()
+        assert calls == []

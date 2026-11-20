@@ -1,13 +1,16 @@
-﻿"""Main chat screen: banner + transcript + prompt bar.
+"""Main chat screen: banner + transcript + prompt bar.
 
 Notebook == session. No separate session layer.
 """
 
 from __future__ import annotations
 
+import contextlib
+import io
 import logging
 import os
 import sys
+import threading
 from typing import Callable, Dict, List, Optional
 
 from textual import work
@@ -16,6 +19,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.screen import Screen
+from textual.widgets import Footer
 
 from opennote.agents.loop import TurnCancelled, agent_turn
 from opennote.chat.ask import AskResult
@@ -24,13 +28,40 @@ from opennote.notebooks import Notebook, NotebookManager, current_project
 from opennote.retrieval.retriever import Retriever, render_results
 from opennote.transcript import append_messages, load_transcript, clear_transcript, save_transcript
 from opennote.tui.commands import lookup, make_commands
-from opennote.tui.dialogs import HelpDialog, InfoDialog, ask_input, item_list, confirm_dialog
+from opennote.tui.dialogs import HelpDialog, InfoDialog, PermissionDialog, ask_input, item_list, confirm_dialog
 from opennote.tui.theme import DEFAULT, LIGHT, Palette
 from opennote.tui.widgets.prompt import MODE_LABELS, MODES, PromptBar, PromptInput
 from opennote.tui.widgets.sidebar import SideBar
 from opennote.tui.widgets.transcript import Transcript
 
 logger = logging.getLogger("opennote.tui.chat")
+
+
+@contextlib.contextmanager
+def _captured_stdio():
+    """Capture stdout/stderr for the duration of the block.
+
+    Third-party progress bars (tqdm in the embedder, the HuggingFace "Loading
+    weights" bar, docling) write to the real terminal, which corrupts the
+    Textual alternate screen. ``sys.stderr.isatty()`` is True under Textual, so
+    libraries that gate progress bars on a tty still emit them here.
+
+    This swaps the process-global ``sys.stdout``/``sys.stderr``, so it is only
+    safe because every turn entry point is busy-guarded and exactly one worker
+    runs at a time (see ``ChatScreen._refuse_when_busy``).
+    """
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        yield out, err
+
+
+def _footer_labels(footer) -> tuple:
+    """``(cwd_name, branch)`` -> the two footer Label strings."""
+    from opennote import __version__
+
+    cwd_name, branch = footer
+    left = f"{cwd_name}:{branch}" if branch else cwd_name
+    return left, f"OpenNote {__version__}"
 
 
 class TurnResult(Message):
@@ -76,6 +107,23 @@ class RoundProgress(Message):
         super().__init__()
         self.round = round_
         self.total = total
+
+
+class StatusMsg(Message):
+    """Progress detail for the status row (e.g. the cold embedding-model load)."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
+
+
+class SidebarSlowMsg(Message):
+    """Slow sidebar sections, computed off the UI thread."""
+
+    def __init__(self, services, footer) -> None:
+        super().__init__()
+        self.services = services
+        self.footer = footer
 
 
 class IngestResultMsg(Message):
@@ -130,10 +178,14 @@ class ModelsResultMsg(Message):
 
 class ChatScreen(Screen):
     BINDINGS = [
-        Binding("ctrl+c,ctrl+q", "quit", "Quit", priority=True),
+        # ctrl+q (and /exit) quit. ctrl+c is deliberately *not* bound: Textual
+        # already uses it to copy from a focused input, and binding it here at
+        # priority made copying out of the prompt impossible.
+        Binding("ctrl+q", "quit", "Quit", priority=True),
         Binding("escape", "interrupt", "Interrupt", priority=True),
         Binding("tab", "cycle_mode", "Cycle mode", priority=True),
-        Binding("ctrl+p", "open_palette", "Command palette", priority=True),
+        Binding("ctrl+p", "open_palette", "Commands", priority=True),
+        Binding("f1", "show_help", "Help", priority=True),
     ]
 
     def __init__(
@@ -175,6 +227,12 @@ class ChatScreen(Screen):
         self._retriever_cache: Dict = {}
         # TTL cache for slow sidebar sections (skill/plugin discovery, git).
         self._sidebar_slow_cache: Dict = {}
+        # "provider | model" line above the sidebar's Services block; recomputed
+        # by _sync_meta so the off-thread path does not re-derive it.
+        self._meta_head: str = ""
+        # True while the off-thread sidebar worker is in flight, so repeated
+        # _sync_meta calls do not each spawn another one.
+        self._sidebar_slow_pending: bool = False
 
     # -- composition -------------------------------------------------------
 
@@ -184,6 +242,10 @@ class ChatScreen(Screen):
                 yield Transcript(id="transcript")
                 yield PromptBar(id="prompt-bar")
             yield SideBar(id="sidebar")
+        yield Footer()
+
+    def action_show_help(self) -> None:
+        self._show_help()
 
     def _open_palette(self) -> None:
         self.action_open_palette()
@@ -196,10 +258,42 @@ class ChatScreen(Screen):
     SIDEBAR_MIN_WIDTH = 112
 
     def on_mount(self) -> None:
+        self._apply_keybinds()
         self.prompt = self.query_one("#prompt-bar", PromptBar)
         self.transcript = self.query_one("#transcript", Transcript)
         self.sidebar = self.query_one("#sidebar", SideBar)
         self._fit_sidebar()
+
+    def _apply_keybinds(self) -> None:
+        """Apply optional keybind overrides from ``opennote.json``."""
+        from opennote.config import get_config
+
+        overrides = get_config().keybinds or {}
+        if not overrides:
+            return
+        action_to_key = {
+            "quit": ("app.exit", "quit", "exit"),
+            "interrupt": ("session.interrupt", "interrupt", "escape"),
+            "cycle_mode": ("agent.cycle", "mode", "cycle_mode"),
+            "open_palette": ("command.palette.show", "palette", "command.palette.show"),
+            "show_help": ("help.show", "help", "help.show"),
+        }
+        bindings = []
+        changed = False
+        for b in list(self.BINDINGS):
+            new_key = None
+            for name in action_to_key.get(b.action, ()):
+                if overrides.get(name):
+                    new_key = str(overrides[name])
+                    break
+            if new_key and new_key != b.key:
+                changed = True
+                bindings.append(Binding(new_key, b.action, b.description, priority=b.priority, show=b.show))
+            else:
+                bindings.append(b)
+        if changed:
+            self.BINDINGS = tuple(bindings)
+            self.refresh_bindings()
 
     def on_resize(self, event) -> None:
         self._fit_sidebar_display()
@@ -244,12 +338,13 @@ class ChatScreen(Screen):
         self._sync_meta()
 
     def _enter_studio(self, _arg: str = "") -> None:
-        self.mode = "studio"
-        self.prompt.set_mode(self.mode)
+        self._set_mode("studio")
+        if self.mode != "studio":
+            return
         self.transcript.add_info(
-            "Studio mode: pick a generator command (/mindmap, /study, /faq, /briefing, /timeline, /suggest, /audio, /video) or type a topic to open the generator menu."
+            "Studio mode: type a topic and press enter to pick a generator, or run one directly "
+            "(/mindmap, /study, /faq, /briefing, /timeline, /suggest, /audio, /video)."
         )
-        self._open_studio_menu()
 
     # -- setup -------------------------------------------------------------
 
@@ -342,6 +437,9 @@ class ChatScreen(Screen):
             model = self.notebook.model
         if not pid:
             pid = "no provider"
+        # Cached head for the sidebar's Services block: both the sync and the
+        # off-thread path need it and neither should re-derive it.
+        self._meta_head = f"{pid} | {model}" if model else pid
         self.prompt.set_model(model, pid)
         self._sync_sidebar(model, pid)
         # Opencode-style: ctx readout always visible, even before the first
@@ -371,6 +469,12 @@ class ChatScreen(Screen):
             sidebar = self.query_one("#sidebar", SideBar)
         except Exception:
             return
+        # A hidden sidebar costs a filesystem walk, a plugin import and a `git`
+        # subprocess for nothing, and that is ~150 ms of UI-thread freeze on the
+        # first turn of every TTL window (ledger L188). Most terminals are
+        # narrower than SIDEBAR_MIN_WIDTH, so this is the common case.
+        if not sidebar.display:
+            return
         # Session: notebook name + created timestamp.
         try:
             if self.notebook is not None:
@@ -395,60 +499,58 @@ class ChatScreen(Screen):
             sidebar.set_usage(usage)
         except Exception:
             pass
-        # Services: provider/model + currently active skills and plugins.
-        # Slow part (filesystem discovery, plugin load) is TTL-cached.
+        # Services + footer: the slow parts (filesystem discovery, plugin load,
+        # a `git rev-parse` subprocess) run in a worker and come back as a
+        # message, so they never run on the UI thread. TTL-cached either way.
+        head = self._meta_head
+        services = self._sidebar_slow("services")
+        footer = self._sidebar_slow("footer")
+        if services is not None:
+            sidebar.set_services([head, *services])
+        if footer is not None:
+            sidebar.set_footer(*_footer_labels(footer))
+        if (services is None or footer is None) and not self._sidebar_slow_pending:
+            self._sidebar_slow_pending = True
+            self._load_sidebar_slow()
+
+    @work(thread=True, exclusive=True, group="sidebar")
+    async def _load_sidebar_slow(self) -> None:
+        """Compute the TTL-cached sidebar sections off the UI thread."""
+        services: List[str] = []
         try:
-            lines = [f"{pid} | {model}" if model else pid]
-            slow = self._sidebar_slow("services")
-            if slow is None:
-                slow = []
-                try:
-                    from opennote.skills.registry import SkillRegistry
+            from opennote.skills.registry import SkillRegistry
 
-                    skills = SkillRegistry.discover().list()
-                    slow.append(
-                        "skills: " + ", ".join(s.name for s in skills) if skills else "skills: none"
-                    )
-                except Exception:
-                    pass
-                try:
-                    from opennote.capabilities import get_capabilities
-                    from opennote.plugins.loader import PluginContext, PluginLoader
-
-                    caps = get_capabilities()
-                    loader = PluginLoader(PluginContext(capabilities=caps, notebook=self.notebook))
-                    loader.load()
-                    names = [h._name for h in loader.hooks] + [
-                        t for t in loader.tools if not any(t in h.tools for h in loader.hooks)
-                    ]
-                    slow.append("plugins: " + ", ".join(names) if names else "plugins: none")
-                except Exception:
-                    pass
-                self._sidebar_slow("services", slow)
-            lines.extend(slow)
-            sidebar.set_services(lines)
+            skills = SkillRegistry.discover().list()
+            services.append("skills: " + ", ".join(s.name for s in skills) if skills else "skills: none")
         except Exception:
             pass
-        # Footer: cwd + git branch (left), app version (right). Branch lookup
-        # shells out to git: TTL-cached for the same reason.
+        try:
+            from opennote.capabilities import get_capabilities
+            from opennote.plugins.loader import PluginContext, PluginLoader
+
+            caps = get_capabilities()
+            loader = PluginLoader(PluginContext(capabilities=caps, notebook=self.notebook))
+            loader.load()
+            names = [h._name for h in loader.hooks] + [
+                t for t in loader.tools if not any(t in h.tools for h in loader.hooks)
+            ]
+            services.append("plugins: " + ", ".join(names) if names else "plugins: none")
+        except Exception:
+            pass
+        footer = None
         try:
             from pathlib import Path
 
-            from opennote import __version__
+            from opennote.tui.widgets.sidebar import git_branch
 
-            cached_footer = self._sidebar_slow("footer")
-            if cached_footer is None:
-                from opennote.tui.widgets.sidebar import git_branch
-
-                cwd = Path.cwd()
-                branch = git_branch(cwd)
-                cached_footer = (cwd.name, branch)
-                self._sidebar_slow("footer", cached_footer)
-            cwd_name, branch = cached_footer
-            left = f"{cwd_name}:{branch}" if branch else cwd_name
-            sidebar.set_footer(left, f"OpenNote {__version__}")
+            cwd = Path.cwd()
+            footer = (cwd.name, git_branch(cwd))
         except Exception:
             pass
+        if footer is not None:
+            self._sidebar_slow("footer", footer)
+        self._sidebar_slow("services", services)
+        self._post_from_worker(SidebarSlowMsg(services, footer))
 
     # -- history rendering -------------------------------------------------
 
@@ -477,18 +579,41 @@ class ChatScreen(Screen):
             return hit[1]
         return None
 
-    def _get_retriever(self, top_k=None, use_bm25: bool = True, bm25_alpha: float = 0.5):
-        """Session-cached Retriever for the current notebook (see __init__)."""
+    def _post_from_worker(self, message) -> None:
+        """Post *message* to this screen from a worker thread (no-op elsewhere)."""
+        import threading
+
+        if threading.current_thread() is threading.main_thread():
+            self.post_message(message)
+            return
+        try:
+            self.app.call_from_thread(self.post_message, message)
+        except Exception:
+            pass
+
+    def _get_retriever(self, use_bm25: bool = True, bm25_alpha: float = 0.5):
+        """Session-cached Retriever for the current notebook (see __init__).
+
+        ``top_k`` is deliberately *not* part of the cache key: a Retriever
+        carries a Chroma client and a BM25 corpus snapshot, and the three call
+        sites ask for 5, 8 and "adaptive", so keying on it built one of each
+        for the same notebook. Pass ``top_k`` to ``search()`` instead.
+        """
         from opennote.retrieval.retriever import Retriever
 
         nb = self.notebook
-        key = (str(nb.directory), top_k, use_bm25, bm25_alpha)
+        key = (str(nb.directory), use_bm25, bm25_alpha)
         ret = self._retriever_cache.get(key)
         if ret is None:
-            kwargs: Dict[str, object] = {"use_bm25": use_bm25, "bm25_alpha": bm25_alpha}
-            if top_k is not None:
-                kwargs["top_k"] = top_k
-            ret = Retriever(nb, **kwargs)  # type: ignore[arg-type]
+            # Constructing a Retriever loads the embedding model, and torch /
+            # transformers write a "Loading weights" progress bar straight to
+            # the real stderr -- which corrupts the Textual alternate screen.
+            # It is also a ~90 s cold start, so say what is happening.
+            self._post_from_worker(
+                StatusMsg("Loading embedding model (first use, can take a minute)...")
+            )
+            with _captured_stdio():
+                ret = Retriever(nb, use_bm25=use_bm25, bm25_alpha=bm25_alpha)  # type: ignore[arg-type]
             self._retriever_cache[key] = ret
         return ret
 
@@ -538,16 +663,31 @@ class ChatScreen(Screen):
         if self.prompt.popup_visible():
             self.prompt.complete_command()
             return
-        self.mode = MODES[(MODES.index(self.mode) + 1) % len(MODES)]
-        self.prompt.set_mode(self.mode)
-        self.transcript.add_info(
-            f"Mode: {MODE_LABELS.get(self.mode, self.mode)} "
-            "(Tab to switch; ask = grounded agent, search = LLM-free retrieval, studio = artifact generators)"
-        )
+        self._set_mode(MODES[(MODES.index(self.mode) + 1) % len(MODES)])
 
     # -- ask / search workers ----------------------------------------------
 
+    def _refuse_when_busy(self) -> bool:
+        """Return True (and tell the user) when a turn is already running.
+
+        ``prompt.busy`` is the app's only mutual-exclusion token, so every
+        entry point that starts work must go through here. A Textual
+        ``@work(thread=True, exclusive=True)`` cancel is NOT a cancellation of a
+        running turn: it only drops the asyncio wrapper while the thread keeps
+        going (textual/worker.py: "cancelled work may still be running"). Two
+        overlapping turns therefore both reach the provider, both append to the
+        transcript, and whichever finishes first calls ``set_idle()`` -- so the
+        UI claims to be free while the other turn is still running, and `esc`
+        can no longer interrupt it (ledger L184).
+        """
+        if not self.prompt.busy:
+            return False
+        self.transcript.add_error("Busy - press esc twice to interrupt the running turn first.")
+        return True
+
     def _start_ask(self, question: str) -> None:
+        if self._refuse_when_busy():
+            return
         if not self._client:
             self.transcript.add_error("No provider configured. Run 'opennote auth add <provider>'.")
             return
@@ -588,6 +728,40 @@ class ChatScreen(Screen):
         self._pending_skill = None
         return "\n".join(parts), skill.name
 
+    def _permission_handler(self, request) -> str:
+        """Resolve an ``ask`` permission from the worker thread.
+
+        The engine calls this synchronously while a tool is being dispatched.
+        We hop to the UI thread to show the modal and block on an Event until a
+        choice arrives. Interrupting the turn (Esc) or a 120s timeout fails
+        closed to ``reject`` — a never-resolved permission must never turn into
+        an implicit allow.
+        """
+        result: Dict[str, str] = {}
+        event = threading.Event()
+
+        def show_dialog() -> None:
+            def on_choice(choice) -> None:
+                result["choice"] = str(choice) if choice else "reject"
+                event.set()
+
+            try:
+                self.app.push_screen(PermissionDialog(request.describe()), callback=on_choice)
+            except Exception:  # app closing / screen gone
+                result["choice"] = "reject"
+                event.set()
+
+        try:
+            self.app.call_from_thread(show_dialog)
+        except Exception:
+            return "reject"
+
+        while not event.wait(0.25):
+            if self._cancel_flag:
+                result["choice"] = "reject"
+                break
+        return result.get("choice", "reject")
+
     @work(thread=True, exclusive=True, group="turn")
     async def _run_ask(self, question: str, skill_block: str = "", skill_name: str = "") -> None:
         notebook = self.notebook
@@ -613,6 +787,7 @@ class ChatScreen(Screen):
                 on_round=lambda used, total: self.app.call_from_thread(
                     self.post_message, RoundProgress(used, total)
                 ),
+                permission_handler=self._permission_handler,
             )
         except TurnCancelled:
             self.app.call_from_thread(self.post_message, TurnCancelledMsg())
@@ -634,6 +809,8 @@ class ChatScreen(Screen):
         )
 
     def _start_search(self, question: str) -> None:
+        if self._refuse_when_busy():
+            return
         if self.notebook is None:
             self.transcript.add_error("Notebook is not available.")
             return
@@ -648,7 +825,7 @@ class ChatScreen(Screen):
             if self._retriever is not None:
                 results = self._retriever.search(question)
             else:
-                results = self._get_retriever(top_k=5).search(question)
+                results = self._get_retriever().search(question, top_k=5)
             text = render_results(results)
         except Exception as e:
             logger.exception("Search failed")
@@ -659,15 +836,17 @@ class ChatScreen(Screen):
     # -- studio: artifact generators ---------------------------
 
     STUDIO_GENERATORS = [
-        ("mindmap", "Mind map", "create_mindmap"),
-        ("study", "Study guide", "make_study_guide"),
-        ("faq", "FAQ", "make_faq"),
-        ("briefing", "Briefing", "make_briefing"),
-        ("timeline", "Timeline", "make_timeline"),
-        ("suggest", "Suggested questions", "make_suggested_questions"),
+        ("mindmap", "Mind map"),
+        ("study", "Study guide"),
+        ("faq", "FAQ"),
+        ("briefing", "Briefing"),
+        ("timeline", "Timeline"),
+        ("suggest", "Suggested questions"),
     ]
 
     def _start_studio(self, text: str) -> None:
+        if self._refuse_when_busy():
+            return
         if self.notebook is None:
             self.transcript.add_error("Notebook is not available.")
             return
@@ -678,30 +857,39 @@ class ChatScreen(Screen):
         self._open_studio_menu()
 
     def _open_studio_menu(self) -> None:
-        topic = getattr(self, "_studio_topic", "") or "your topic"
+        topic = getattr(self, "_studio_topic", "") or ""
+        shown = topic or "your topic"
         items = [
             ("view", f"{'View artifacts':>20}  (in-terminal viewer)"),
         ]
         items += [
-            (key, f"{label:>20}  {topic}")
-            for key, label, _ in self.STUDIO_GENERATORS
+            (key, f"{label:>20}  {shown}") for key, label in self.STUDIO_GENERATORS
         ]
         items += [
-            ("audio", f"{'Narrated audio':>20}  {topic}"),
-            ("video", f"{'Narrated video':>20}  {topic}"),
+            ("audio", f"{'Narrated audio':>20}  {shown}"),
+            ("video", f"{'Narrated video':>20}  {shown}"),
         ]
         item_list(self.app, "Studio: pick a generator", items, on_pick=self._on_studio_picked)
 
     def _on_studio_picked(self, key: Optional[str]) -> None:
         if not key:
             return
-        if self.notebook is None:
-            self.transcript.add_error("Notebook is not available.")
-            return
         if key == "view":
             self._open_artifact("")
             return
+        if self._refuse_when_busy():
+            return
+        if self.notebook is None:
+            self.transcript.add_error("Notebook is not available.")
+            return
+        # A studio menu opened without a topic (e.g. ctrl+p -> Studio Mode)
+        # must ask for one rather than generate against "".
         topic = getattr(self, "_studio_topic", "") or ""
+        if not topic:
+            self._start_studio_palette(key)
+            return
+        # Consume the topic so a later bare menu does not silently reuse it.
+        self._studio_topic = ""
         if key == "audio":
             self._cancel_flag = False
             self.prompt.set_busy("Generating audio...")
@@ -721,6 +909,8 @@ class ChatScreen(Screen):
             topic = arg.strip()
             if not topic:
                 self.transcript.add_info(f"Usage: /{kind} <topic or question>")
+                return
+            if self._refuse_when_busy():
                 return
             self._studio_topic = topic
             self._on_studio_picked(kind)
@@ -785,8 +975,8 @@ class ChatScreen(Screen):
             from opennote.video import save_video_artifact
 
             try:
-                retriever = self._retriever or self._get_retriever(top_k=8)
-                results = retriever.search(topic)
+                retriever = self._retriever or self._get_retriever()
+                results = retriever.search(topic, top_k=8)
             except ValueError:
                 self.app.call_from_thread(
                     self.post_message, StudioFailed("No sources indexed yet. Run /ingest first.")
@@ -863,6 +1053,7 @@ class ChatScreen(Screen):
     def _generate_studio_artifact(self, kind: str, topic: str, notebook: Notebook) -> str:
         from opennote.artifacts import (
             create_mindmap,
+            frame_studio_context,
             generate_briefing,
             generate_faq,
             generate_study_guide,
@@ -872,18 +1063,12 @@ class ChatScreen(Screen):
         )
 
         try:
-            retriever = self._retriever or self._get_retriever(top_k=8)
-            results = retriever.search(topic)
+            retriever = self._retriever or self._get_retriever()
+            results = retriever.search(topic, top_k=8)
         except ValueError:
             return ""
 
-        context_parts: List[str] = []
-        for i, r in enumerate(results, start=1):
-            fn = r.metadata.get("filename", "unknown")
-            citation = f"[{i}] {fn}"
-            chunk = r.content[:800].replace("\n", " ")
-            context_parts.append(f"{citation}: {chunk}")
-        context_text = "\n".join(context_parts) if context_parts else "No context available."
+        context_text = frame_studio_context(results)
 
         prompts = {
             "study": generate_study_guide(topic, context_text),
@@ -941,7 +1126,7 @@ class ChatScreen(Screen):
         if dropped:
             plural = "" if dropped == 1 else "s"
             self.transcript.add_info(
-                f"{dropped} claim{plural} omitted — not sufficiently supported by the cited source."
+                f"{dropped} claim{plural} omitted - not sufficiently supported by the cited source."
             )
         # Sync the render cursor to storage so a remount does not re-append
         # the echo + this answer (both now sit in transcript.json).
@@ -1007,7 +1192,7 @@ class ChatScreen(Screen):
                 suffix = _Path(str(msg.detail)).suffix.lower()
                 if suffix not in (".mp3", ".wav", ".mp4"):
                     self.transcript.add_info(
-                        f"Note: full {msg.label} unavailable — showing transcript/script instead."
+                        f"Note: full {msg.label} unavailable - showing transcript/script instead."
                     )
             except Exception:
                 pass
@@ -1028,7 +1213,7 @@ class ChatScreen(Screen):
                 else:
                     body = art.body
                     if len(body) > 4000:
-                        body = body[:4000].rstrip() + "\n\n…(truncated — /open <file> for the full text)"
+                        body = body[:4000].rstrip() + "\n\n...(truncated - /open <file> for the full text)"
                     self.transcript.add_answer(body)
         except Exception:
             pass
@@ -1042,6 +1227,30 @@ class ChatScreen(Screen):
     def on_round_progress(self, msg: RoundProgress) -> None:
         if self.prompt.busy:
             self.prompt.update_status(f"Searching sources... round {msg.round}/{msg.total}")
+
+    def on_status_msg(self, msg: StatusMsg) -> None:
+        if self.prompt.busy:
+            self.prompt.update_status(msg.text)
+
+    def on_sidebar_slow_msg(self, msg: SidebarSlowMsg) -> None:
+        # Always clear first: a stuck flag would stop the sidebar refreshing
+        # for the rest of the session.
+        self._sidebar_slow_pending = False
+        if not self.sidebar.display:
+            return
+        self._render_sidebar_sections(self.sidebar, msg.services, msg.footer)
+
+    def _render_sidebar_sections(self, sidebar: SideBar, services, footer) -> None:
+        """Paint the services/footer blocks from cached (or freshly computed) values."""
+        try:
+            sidebar.set_services([self._meta_head, *services])
+        except Exception:
+            pass
+        if footer is not None:
+            try:
+                sidebar.set_footer(*_footer_labels(footer))
+            except Exception:
+                pass
 
     # -- interrupts --------------------------------------------------------
 
@@ -1058,6 +1267,13 @@ class ChatScreen(Screen):
             self.prompt.arm_interrupt()
 
     def action_quit(self) -> None:
+        if self.prompt.busy:
+            confirm_dialog(
+                self.app,
+                "A turn is still running. Quit anyway? The result will be lost.",
+                on_confirm=lambda confirmed: self.app.exit() if confirmed else None,
+            )
+            return
         self.app.exit()
 
     # -- slash commands ----------------------------------------------------
@@ -1075,14 +1291,25 @@ class ChatScreen(Screen):
     # -- command handlers --------------------------------------------------
 
     def _show_help(self, _arg: str = "") -> None:
-        from opennote.tui.dialogs import HelpDialog
+        # help_text() is the full, categorised command list; it used to be dead
+        # code kept alive only by a test while /help showed a one-liner
+        # (ledger L190).
+        from opennote.tui.commands import help_text
+
         self.app.push_screen(
-            HelpDialog('Help', 'Press ctrl+p to see all available actions and commands in any context.')
+            HelpDialog("Help", help_text(self.commands) + "\n\ntab cycles modes - ctrl+p actions - esc closes dialogs / interrupts a turn")
         )
 
     def _notify_done(self, message: str) -> None:
-        """Toast a background completion (visible even over modal screens)."""
+        """Toast a completion, but only while a modal covers the transcript.
+
+        The answer/error is already written inline, so toasting on the normal
+        path double-reported it; the toast earns its place when the user is
+        looking at something else (e.g. the /snake waiting room).
+        """
         try:
+            if self.app.screen is self:
+                return
             self.app.notify(message, title="OpenNote")
         except Exception:
             pass
@@ -1172,8 +1399,7 @@ class ChatScreen(Screen):
     # -- undo / details -------------------------------------------------
 
     def _undo_last_turn(self, _arg: str = "") -> None:
-        if self.prompt.busy:
-            self.transcript.add_error("Busy.")
+        if self._refuse_when_busy():
             return
         if self.notebook is None:
             self.transcript.add_info("Nothing to undo.")
@@ -1199,13 +1425,15 @@ class ChatScreen(Screen):
         self.transcript.add_info(f"Undid the last turn ({dropped} message(s) removed).")
 
     def _show_details(self, _arg: str = "") -> None:
+        from opennote.notebooks import MAX_SOURCES
+
         lines = ["Notebook:"]
         if self.notebook:
             lines.append(f"  name:      {self.notebook.name}")
             lines.append(f"  directory: {self.notebook.directory}")
             lines.append(f"  embed:     {self.notebook.embed_model}")
             lines.append(f"  project:   {self.notebook.project}")
-            lines.append(f"  sources:   {len(self.notebook.sources)}/{5}")
+            lines.append(f"  sources:   {len(self.notebook.sources)}/{MAX_SOURCES}")
             for s in self.notebook.sources:
                 lines.append(f"    - {s}")
             msgs = load_transcript(self.notebook)
@@ -1254,10 +1482,10 @@ class ChatScreen(Screen):
             return
         self._pending_skill = skill.name
         if not task:
-            self.transcript.add_info(f"Skill '{skill.name}' armed — type your question (applies to the next answer).")
+            self.transcript.add_info(f"Skill '{skill.name}' armed - type your question (applies to the next answer).")
             return
         if self.prompt.busy:
-            self.transcript.add_info(f"Skill '{skill.name}' armed (busy — applies to your next answer).")
+            self.transcript.add_info(f"Skill '{skill.name}' armed (busy - applies to your next answer).")
             return
         self._start_ask(task)
 
@@ -1278,7 +1506,7 @@ class ChatScreen(Screen):
             return
         lines = [f"Skill: {skill.name}", f"Description: {skill.description}", f"Directory: {skill.directory}", ""]
         lines.append("How to use:")
-        lines.append(f"  /use {skill.name} <your task>  — applies this skill to your next answer")
+        lines.append(f"  /use {skill.name} <your task>  - applies this skill to your next answer")
         scripts = [f for f in (skill.files or []) if f.endswith((".py", ".js", ".sh"))]
         if scripts:
             import os as _os
@@ -1385,8 +1613,18 @@ class ChatScreen(Screen):
         self._set_mode("search")
 
     def _set_mode(self, mode: str) -> None:
+        if self._refuse_when_busy():
+            # Must not fall through: the hint below calls set_idle(), which
+            # would report idle while a turn is still running.
+            return
         self.mode = mode if mode in MODES else "ask"
         self.prompt.set_mode(self.mode)
+        # Mode feedback belongs in the status row, not the transcript: Tab is the
+        # most-pressed key and a line per press buried the scrollback.
+        label = MODE_LABELS.get(self.mode, self.mode)
+        self.prompt.set_idle(
+            hint=f"{label} mode - tab cycles, ctrl+p for all actions"
+        )
 
     def _switch_theme(self, arg: str = "") -> None:
         choice = arg.strip().lower()
@@ -1402,13 +1640,24 @@ class ChatScreen(Screen):
         self.app.register_theme(self.app.palette.to_textual())
         self.app.theme = self.app.palette.name
         self.palette = self.app.palette
-        self.transcript.add_banner(self.app.palette)
+        # The transcript bakes palette colors into each rich Text at write time,
+        # so it must be re-pointed or every *new* line keeps the old theme's
+        # colors (ledger L186).
+        self.transcript.palette = self.palette
+        # Re-draw the logo only while it is the whole transcript; otherwise a
+        # repeated /theme stacks a banner per toggle. Counted by logical writes
+        # (1), not rendered strips, which lag until the size is known.
+        if self.transcript.write_count <= 1:
+            self.transcript.clear()
+            self.transcript.add_banner(self.palette)
+            self._banner_live = True
+        else:
+            self.transcript.add_info(f"Theme: {self.palette.name}")
 
     def _list_sources(self, _arg: str = "") -> None:
         if self.notebook is None:
             return
-        if self.prompt.busy:
-            self.transcript.add_error("Busy.")
+        if self._refuse_when_busy():
             return
         self.prompt.set_busy("Listing sources...")
         self._run_list_sources()
@@ -1561,8 +1810,7 @@ class ChatScreen(Screen):
 
     def _show_notebook_picker(self, _arg: str = "") -> None:
         """Top-level notebook menu: open / new / delete / rename."""
-        if self.prompt.busy:
-            self.transcript.add_error("Busy.")
+        if self._refuse_when_busy():
             return
         items = [
             ("open", "Open existing notebook"),
@@ -1604,8 +1852,7 @@ class ChatScreen(Screen):
         if not name:
             self.transcript.add_info("Usage: /notebook <name>")
             return False
-        if self.prompt.busy:
-            self.transcript.add_error("Busy.")
+        if self._refuse_when_busy():
             return False
         try:
             notebook = self._manager.get(name)
@@ -1620,6 +1867,9 @@ class ChatScreen(Screen):
         self.transcript.clear()
         self._reset_history_rendered()
         self._invalidate_retrievers()
+        # The cached Services lines are notebook-scoped (PluginContext carries
+        # the notebook), so they must not survive a switch (ledger L189).
+        self._sidebar_slow_cache = {}
         self._banner_live = False
         self._show_banner()
         msgs = load_transcript(notebook)
@@ -1635,8 +1885,7 @@ class ChatScreen(Screen):
         if not name:
             self.transcript.add_info("Usage: /create <name>")
             return
-        if self.prompt.busy:
-            self.transcript.add_error("Busy.")
+        if self._refuse_when_busy():
             return
         try:
             notebook = self._manager.create(name, project=current_project())
@@ -1751,8 +2000,7 @@ class ChatScreen(Screen):
         if self.notebook is None:
             self.transcript.add_error("Notebook is not available.")
             return
-        if self.prompt.busy:
-            self.transcript.add_error("Busy.")
+        if self._refuse_when_busy():
             return
         self.prompt.set_busy(f"Indexing {arg}...")
         self._run_ingest(arg)
@@ -1761,14 +2009,9 @@ class ChatScreen(Screen):
     async def _run_ingest(self, target: str) -> None:
         notebook = self.notebook
         try:
-            import contextlib
-            import io
-
             # Capture any stdout/stderr / tqdm / docling progress that would
             # otherwise corrupt the Textual alternate screen. Also capture
             # pipeline fallback warnings via a temporary logging handler.
-            stdout_buf = io.StringIO()
-            stderr_buf = io.StringIO()
             fallback_used = False
 
             class _FallbackHandler(logging.Handler):
@@ -1781,7 +2024,7 @@ class ChatScreen(Screen):
             _handler = _FallbackHandler()
             _logger.addHandler(_handler)
             try:
-                with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+                with _captured_stdio() as (stdout_buf, stderr_buf):
                     if self._ingest_fn is not None:
                         count = self._ingest_fn(notebook, target)
                     else:
@@ -1829,7 +2072,7 @@ class ChatScreen(Screen):
             settings = config.get(p.id)
             model = settings.model if settings else None
             key = resolve_key(p.id)
-            bits = ["key Γ£ô" if key else "no key"]
+            bits = ["key set" if key else "no key"]
             bits.append(f"model {model}" if model else "no model")
             marker = " *" if self._client and p.id == self._client.provider_id else ""
             lines.append(f"  {p.id:<10} {', '.join(bits)}{marker}")
@@ -1867,8 +2110,8 @@ class ChatScreen(Screen):
         ask_input(
             self.app,
             "Colab / Kaggle endpoint",
-            "Paste tunnel URL (https://…/v1, /models suffix stripped automatically):",
-            placeholder="https://…trycloudflare.com/v1",
+            "Paste tunnel URL (https://.../v1, /models suffix stripped automatically):",
+            placeholder="https://...trycloudflare.com/v1",
             on_submit=self._on_endpoint_url,
         )
 
@@ -1936,6 +2179,8 @@ class ChatScreen(Screen):
 
     def _on_connect_key(self, pid: str):
         def handler(key: Optional[str]) -> None:
+            from opennote.auth.registry import get_provider
+
             if not key:
                 return
             key = key.strip()
@@ -1978,7 +2223,6 @@ class ChatScreen(Screen):
                 return
             from opennote.auth.config import AuthConfig
             from opennote.auth.keychain import mask_key, set_key
-            from opennote.auth.registry import get_provider
 
             try:
                 set_key(pid, key)
@@ -2000,8 +2244,7 @@ class ChatScreen(Screen):
         if not key:
             self.transcript.add_error("No API key stored for this provider.")
             return
-        if self.prompt.busy:
-            self.transcript.add_error("Busy.")
+        if self._refuse_when_busy():
             return
 
         self.prompt.set_busy(f"Validating {provider.id} key...")
@@ -2144,8 +2387,7 @@ class ChatScreen(Screen):
         models: List[str] = []
         key = resolve_key(provider_id)
         if key:
-            if self.prompt.busy:
-                self.transcript.add_error("Busy.")
+            if self._refuse_when_busy():
                 return
             self.prompt.set_busy(f"Validating {provider_id} key...")
             self._run_validate_models(provider_id, key, flow="switch")
@@ -2185,7 +2427,7 @@ class ChatScreen(Screen):
     def action_open_palette(self) -> None:
         from opennote.tui.dialogs import CommandPalette
 
-        self.app.push_screen(CommandPalette(self, on_done=self._on_palette_done))
-
-    def _on_palette_done(self, value: Optional[str]) -> None:
-        pass
+        # The palette dismisses itself and defers the action via call_later, so
+        # it needs no completion callback (the old on_done/_on_palette_done pair
+        # was never invoked - push_screen had no callback=).
+        self.app.push_screen(CommandPalette(self))

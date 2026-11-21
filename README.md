@@ -91,9 +91,9 @@ iwr -useb https://raw.githubusercontent.com/natarmr/OpenNote/main/install.ps1 | 
 **Via npm or bun (Python 3.10+ still required):**
 
 ```bash
-npx @natarmr/opennote --help                  # try it without installing
-npm install -g @natarmr/opennote              # then: opennote --help
-bunx @natarmr/opennote --help                 # bun works too
+npx @natarmar/opennote --help                  # try it without installing
+npm install -g @natarmar/opennote              # then: opennote --help
+bunx @natarmar/opennote --help                 # bun works too
 ```
 
 The npm package is a thin launcher: on first run it installs the Python app into a
@@ -108,7 +108,7 @@ pipx install "opennote @ https://github.com/natarmr/OpenNote/archive/refs/heads/
 
 *Warning:* never run bare `pip install opennote` or `npm install -g opennote` — those
 names belong to unrelated projects on PyPI and npm. The official npm name is the scoped
-`@natarmr/opennote`; the Python installers fetch the GitHub tarball instead.
+`@natarmar/opennote`; the Python installers fetch the GitHub tarball instead.
 ---
 ##  Usage
 

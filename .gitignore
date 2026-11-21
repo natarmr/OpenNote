@@ -7,7 +7,7 @@ dist/
 .venv/
 venv/
 
-# Node / npm wrapper (npm/ holds the @natarmr/opennote launcher)
+# Node / npm wrapper (npm/ holds the @natarmar/opennote launcher)
 node_modules/
 npm/*.tgz
 

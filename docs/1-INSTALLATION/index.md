@@ -22,10 +22,10 @@ Python 3.10+ is still needed — the npm package is a thin launcher that install
 Python app into a versioned cache on first use.
 
 ```bash
-npx @natarmr/opennote --help                  # no install required
-npm install -g @natarmr/opennote              # global `opennote` command
-bunx @natarmr/opennote --help                 # bun
-bun add -g @natarmr/opennote
+npx @natarmar/opennote --help                  # no install required
+npm install -g @natarmar/opennote              # global `opennote` command
+bunx @natarmar/opennote --help                 # bun
+bun add -g @natarmar/opennote
 ```
 
 Set `OPENNOTE_PYTHON` to pick a specific interpreter, `OPENNOTE_NPM_CACHE` to move the
@@ -41,7 +41,7 @@ pipx install "opennote @ https://github.com/natarmr/OpenNote/archive/refs/heads/
 
 > Heads up: don't run a bare `pip install opennote` or `npm install -g opennote`. Both
 > unscoped names belong to unrelated projects. The official npm package is the scoped
-> `@natarmr/opennote`; the Python installers pull OpenNote from GitHub.
+> `@natarmar/opennote`; the Python installers pull OpenNote from GitHub.
 
 ## From source (for development)
 

@@ -1,4 +1,4 @@
-# @natarmr/opennote
+# @natarmar/opennote
 
 The one-command npm/bun launcher for [OpenNote](https://github.com/natarmr/OpenNote) — a
 private, grounded study harness for your own documents.
@@ -10,15 +10,15 @@ private, grounded study harness for your own documents.
 
 ```bash
 # npm — run without installing
-npx @natarmr/opennote --help
+npx @natarmar/opennote --help
 
 # npm — install globally, then use the `opennote` command
-npm install -g @natarmr/opennote
+npm install -g @natarmar/opennote
 opennote --help
 
 # bun (installs npm packages, so the same package works)
-bunx @natarmr/opennote --help
-bun add -g @natarmr/opennote
+bunx @natarmar/opennote --help
+bun add -g @natarmar/opennote
 opennote --help
 ```
 
@@ -41,7 +41,7 @@ and retrieval dependencies.
 | `OPENNOTE_TARBALL_URL` | Source tarball to install. Default: OpenNote `main` tarball. Point this at a tag or fork for reproducibility. |
 | `OPENNOTE_NPM_CACHE` | Override the cache directory. Default: `%LOCALAPPDATA%\opennote\npm` on Windows, `~/.cache/opennote/npm` elsewhere. |
 
-Uninstall: `npm uninstall -g @natarmr/opennote`. To reclaim disk space, delete the
+Uninstall: `npm uninstall -g @natarmar/opennote`. To reclaim disk space, delete the
 cache directory shown by `OPENNOTE_NPM_CACHE`.
 
 ## Publishing

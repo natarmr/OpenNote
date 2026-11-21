@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Bootstrap logic for the @natarmr/opennote launcher.
+ * Bootstrap logic for the @natarmar/opennote launcher.
  *
  * OpenNote is a Python application; npm/bun install JavaScript, so this thin
  * wrapper pip-installs the app into a versioned cache directory on first run

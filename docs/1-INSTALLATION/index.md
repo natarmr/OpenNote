@@ -16,7 +16,32 @@ iwr -useb https://raw.githubusercontent.com/natarmr/OpenNote/main/install.ps1 | 
 
 The installer finds `python3` → `python` → `py`, needs Python 3.10+, installs via `python -m pip`, then checks that `opennote --help` works.
 
-> Heads up: don't run a bare `pip install opennote`. That name on PyPI belongs to an unrelated project. The installer pulls OpenNote from GitHub.
+## Via npm or bun
+
+Python 3.10+ is still needed — the npm package is a thin launcher that installs the
+Python app into a versioned cache on first use.
+
+```bash
+npx @natarmr/opennote --help                  # no install required
+npm install -g @natarmr/opennote              # global `opennote` command
+bunx @natarmr/opennote --help                 # bun
+bun add -g @natarmr/opennote
+```
+
+Set `OPENNOTE_PYTHON` to pick a specific interpreter, `OPENNOTE_NPM_CACHE` to move the
+cache, or `OPENNOTE_TARBALL_URL` to pin a source tag. Details in `npm/README.md`.
+
+## Via pipx
+
+One command, isolated environment, Python-native:
+
+```bash
+pipx install "opennote @ https://github.com/natarmr/OpenNote/archive/refs/heads/main.tar.gz"
+```
+
+> Heads up: don't run a bare `pip install opennote` or `npm install -g opennote`. Both
+> unscoped names belong to unrelated projects. The official npm package is the scoped
+> `@natarmr/opennote`; the Python installers pull OpenNote from GitHub.
 
 ## From source (for development)
 

@@ -88,7 +88,27 @@ curl.exe -fsSL https://raw.githubusercontent.com/natarmr/OpenNote/main/install |
 iwr -useb https://raw.githubusercontent.com/natarmr/OpenNote/main/install.ps1 | iex
 ```
 
-*Warning:* never run bare `pip install opennote` — that PyPI name belongs to an unrelated video-API SDK. The installers above fetch OpenNote from the GitHub tarball instead.
+**Via npm or bun (Python 3.10+ still required):**
+
+```bash
+npx @natarmr/opennote --help                  # try it without installing
+npm install -g @natarmr/opennote              # then: opennote --help
+bunx @natarmr/opennote --help                 # bun works too
+```
+
+The npm package is a thin launcher: on first run it installs the Python app into a
+versioned cache and then runs it. See [`npm/README.md`](npm/README.md) for the cache
+and Python-selection options.
+
+**Via pipx (Python-native one-liner):**
+
+```bash
+pipx install "opennote @ https://github.com/natarmr/OpenNote/archive/refs/heads/main.tar.gz"
+```
+
+*Warning:* never run bare `pip install opennote` or `npm install -g opennote` — those
+names belong to unrelated projects on PyPI and npm. The official npm name is the scoped
+`@natarmr/opennote`; the Python installers fetch the GitHub tarball instead.
 ---
 ##  Usage
 

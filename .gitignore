@@ -7,6 +7,10 @@ dist/
 .venv/
 venv/
 
+# Node / npm wrapper (npm/ holds the @natarmr/opennote launcher)
+node_modules/
+npm/*.tgz
+
 # Test & tooling caches
 .pytest_cache/
 .mypy_cache/

@@ -440,16 +440,14 @@ class ChatScreen(Screen):
                 self.notebook.save()
             except Exception:
                 pass
-        pid = ""
-        model = ""
+        # Only a live client defines the active provider/model. Notebook
+        # metadata is a *stale snapshot* of a past connection — showing it
+        # after keys are removed makes a disconnected session look connected.
         if self._client:
             pid = self._client.provider_id
             model = self._client.model
-        elif self.notebook:
-            pid = self.notebook.provider_id
-            model = self.notebook.model
-        if not pid:
-            pid = "no provider"
+        else:
+            pid, model = "no provider", ""
         # Cached head for the sidebar's Services block: both the sync and the
         # off-thread path need it and neither should re-derive it.
         self._meta_head = f"{pid} | {model}" if model else pid
@@ -2137,8 +2135,8 @@ class ChatScreen(Screen):
         try:
             sel = resolve_selection()
             lines.insert(0, f"Default: {sel.label} ({sel.source})\n")
-        except Exception:
-            pass
+        except ChatError:
+            lines.insert(0, "Default: none connected - run /connect <provider>\n")
         if not lines:
             lines = ["No providers configured. Use /connect <provider> or opennote auth add."]
         self.app.push_screen(InfoDialog("Providers", "\n".join(lines)))

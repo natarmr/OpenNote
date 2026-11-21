@@ -671,3 +671,10 @@ flow; allow a curated glyph set and colors in the TUI.
 | L220 | MED | \	ui/commands.py\ | /model switched provider, no model command, endpoint buried | **fixed** | /switch-model + /endpoint added, /connect simplified | command tests |
 | L221 | LOW | \	ests/test_chat_client.py\ | Stale test asserted alphabetical default | **fixed** | Rewritten for last-validated semantics | client tests |
 
+## Wave 18 - Stale provider display after key removal (executed)
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L222 | HIGH | auth/resolve.py | last_used / session / config selections were returned even after their keys were removed, so the UI showed a selected model with no connection | **fixed** | All remembered choices validated against currently usable providers; fall through to discovery or a clear No-provider-connected error | tests/test_model_resolution.py (+2) |
+| L223 | MED | tui/screens/chat.py:_sync_meta | With no live client, stale notebook provider/model metadata was displayed as the active selection | **fixed** | Only a live client defines active provider/model; otherwise no provider | TUI suites |
+| L224 | MED | tests/conftest.py | TUI tests wrote last_used into the real ~/.opennote/opennote.json (source of the stale groq/qwen value) | **fixed** | Autouse OPENNOTE_CONFIG_HOME isolation fixture | full suite |

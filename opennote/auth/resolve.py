@@ -97,8 +97,19 @@ def resolve_selection(
 
     ``provider``/``model`` are explicit overrides (flags or agent frontmatter).
     ``notebook`` contributes its saved session selection when present.
+
+    Every *remembered* choice (session, last_used, configured default) is
+    validated against the providers that are usable **right now** (key +
+    model). A stale choice from a removed key must never be reported as the
+    active provider — that is how the UI ended up showing a model with no
+    connection.
     """
-    # 1. explicit flags
+    usable = usable_providers()
+
+    def usable_choice(pid: str) -> bool:
+        return pid == "local" or pid in usable
+
+    # 1. explicit flags — honour even if unusable; get_client gives the error.
     if provider:
         pid = str(provider).strip().lower()
         if pid and pid != "local":
@@ -109,16 +120,16 @@ def resolve_selection(
     if notebook is not None:
         np = getattr(notebook, "provider_id", None)
         nm = getattr(notebook, "model", None)
-        if np:
+        if np and usable_choice(str(np).strip().lower()):
             return Selection(str(np).strip().lower(), str(nm).strip() if nm else None, SOURCE_SESSION)
 
-    # 3. global last-used selection
+    # 3. global last-used selection — only when that provider still has a key
     try:
         from opennote.config import get_config
 
         recent = get_config().last_used or {}
         rp = str(recent.get("provider") or "").strip().lower()
-        if rp:
+        if rp and usable_choice(rp):
             rm = recent.get("model")
             return Selection(rp, str(rm).strip() if rm else None, SOURCE_RECENT)
     except Exception:
@@ -126,19 +137,15 @@ def resolve_selection(
 
     # 4. configured default
     configured = _configured_default()
-    if configured.provider:
-        usable = usable_providers()
-        if configured.provider in usable or configured.provider == "local":
-            return configured
-        # Configured but not usable right now — keep the explicit choice visible;
-        # get_client will raise a helpful error with setup instructions.
+    if configured.provider and usable_choice(configured.provider):
+        return configured
 
     # 5. most recently validated usable provider (fallback, never alphabetical)
     from opennote.auth.config import AuthConfig
 
     config = AuthConfig()
     candidates = sorted(
-        usable_providers(),
+        usable,
         key=lambda pid: (config.get(pid).last_validated_at or "", pid),
         reverse=True,
     )
@@ -152,8 +159,7 @@ def resolve_selection(
     if _local_active():
         return Selection("local", None, SOURCE_DISCOVERY)
     raise ChatError(
-        "No provider is configured with a key and a model. "
-        "Run 'opennote auth add <provider>' first."
+        "No provider is connected. Run /connect or 'opennote auth add <provider>' first."
     )
 
 

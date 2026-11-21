@@ -42,7 +42,7 @@ def _auth(providers):
 
 
 def test_no_providers_raises():
-    with pytest.raises(ChatError, match="No provider is configured"):
+    with pytest.raises(ChatError, match="No provider is connected"):
         resolve_selection()
 
 
@@ -54,7 +54,9 @@ def test_explicit_flag_wins(monkeypatch):
 
 
 def test_session_selection_wins_over_recent(monkeypatch):
-    set_last_used("groq", "qwen/qwen3.8-27b")
+    _auth({"groq": "qwen3", "meta": "muse-spark-1.2"})
+    monkeypatch.setattr("opennote.auth.resolve.resolve_key", lambda pid: True)
+    set_last_used("groq", "qwen3")
     nb = type("NB", (), {"provider_id": "meta", "model": "muse-spark-1.2"})()
     sel = resolve_selection(notebook=nb)
     assert sel.provider == "meta"
@@ -62,8 +64,24 @@ def test_session_selection_wins_over_recent(monkeypatch):
     assert sel.source == SOURCE_SESSION
 
 
+def test_stale_last_used_is_ignored_without_a_key(monkeypatch):
+    """A remembered provider whose key was removed must not be reported."""
+    set_last_used("groq", "qwen/qwen3.8-27b")
+    monkeypatch.setattr("opennote.auth.resolve.resolve_key", lambda pid: False)
+    with pytest.raises(ChatError, match="No provider is connected"):
+        resolve_selection()
+
+
+def test_stale_session_metadata_is_ignored_without_a_key(monkeypatch):
+    monkeypatch.setattr("opennote.auth.resolve.resolve_key", lambda pid: False)
+    nb = type("NB", (), {"provider_id": "openai", "model": "old-qwen"})()
+    with pytest.raises(ChatError, match="No provider is connected"):
+        resolve_selection(notebook=nb)
+
+
 def test_global_last_used_overrides_configured_default(tmp_path, monkeypatch):
     p = global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"model": "google/models/gemini-flash", "last_used": {"provider": "groq", "model": "qwen/qwen3.8-27b"}}), encoding="utf-8")
     clear_cached()
     _auth({"groq": "qwen/qwen3.8-27b", "google": "models/gemini-flash"})
@@ -75,6 +93,7 @@ def test_global_last_used_overrides_configured_default(tmp_path, monkeypatch):
 
 def test_configured_default_used_when_no_recent(tmp_path, monkeypatch):
     p = global_config_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"model": "groq/qwen/qwen3.8-27b"}), encoding="utf-8")
     clear_cached()
     _auth({"groq": "qwen/qwen3.8-27b"})

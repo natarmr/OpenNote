@@ -75,6 +75,16 @@ def loopback_http():
 
 
 
+@pytest.fixture(autouse=True)
+def _isolate_config_home(tmp_path, monkeypatch):
+    """Keep test config writes out of the user's real ~/.opennote/opennote.json.
+
+    An explicit OPENNOTE_CONFIG_HOME wins over this in tests that need to
+    control config paths themselves.
+    """
+    monkeypatch.setenv("OPENNOTE_CONFIG_HOME", str(tmp_path / "test_config_home"))
+
+
 @pytest.fixture
 def notebook_manager(tmp_path, monkeypatch):
     home = tmp_path / "opennote_home"

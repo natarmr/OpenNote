@@ -169,5 +169,5 @@ def test_default_provider_none_raises(tmp_path, monkeypatch):
     home.mkdir(parents=True)
     (home / "auth.json").write_text("{}", encoding="utf-8")
     monkeypatch.setenv("OPENNOTE_HOME", str(home))
-    with pytest.raises(ChatError, match="No provider is configured"):
+    with pytest.raises(ChatError, match="No provider is connected"):
         default_provider()

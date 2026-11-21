@@ -685,3 +685,10 @@ flow; allow a curated glyph set and colors in the TUI.
 | ID | Sev | Location | Description | Status | Fix | Tests |
 |----|-----|----------|-------------|--------|-----|-------|
 | L225 | HIGH | tui/screens/chat.py:_on_models_result_for_switch | Live model fetch failure silently showed hardcoded preferred_models as if they were available - stale/out-of-date model menu | **fixed** | New auth/model_catalog.py with live/cache/hardcoded provenance, last-good live cache, keyword-filter no longer hides live models; both switch and connect menus label their source | tests/test_model_catalog.py (6) |
+
+## Wave 20 - Remove hardcoded model inventories (executed)
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L226 | MED | auth/registry.py | Built-in providers hardcoded model-name lists (preferred/excluded/tts) that went stale and produced unavailable models in menus | **fixed** | All built-in lists emptied; live /models is the only source; generic heuristic ranking retained; config-defined custom providers may still supply hints | tests/test_auth_registry.py, test_auth_models.py |
+| L227 | LOW | tui/screens/chat.py | Offline fallback message claimed offline suggestions were shown even when there were none | **fixed** | Distinct message when no cached/hardcoded models exist | TUI suites |

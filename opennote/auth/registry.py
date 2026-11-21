@@ -3,6 +3,12 @@
 A deliberately small, curated set of providers. Each provider exposes a
 ``GET /models`` endpoint used both for key validation and for automated model
 selection (so one uniform flow covers every provider).
+
+There are **no hardcoded model names** for built-in providers. Provider model
+inventories go stale quickly, so the only source of truth is the live
+``/models`` response. The ``preferred_models`` / ``excluded_models`` /
+``tts_models`` fields remain only so *user-defined* providers in
+``opennote.json`` can supply hints; built-ins leave them empty.
 """
 from __future__ import annotations
 
@@ -33,15 +39,6 @@ PROVIDERS: List[Provider] = [
         models_url="https://api.anthropic.com/v1/models",
         env_var="ANTHROPIC_API_KEY",
         console_url="https://console.anthropic.com/settings/keys",
-        preferred_models=(
-            "claude-sonnet-5",
-            "claude-sonnet-4-6",
-            "claude-sonnet-4-5",
-            "claude-opus-5",
-            "claude-opus-4-8",
-            "claude-haiku-4-6",
-            "claude-haiku-4-5",
-        ),
     ),
     Provider(
         id="openai",
@@ -51,18 +48,6 @@ PROVIDERS: List[Provider] = [
         models_url="https://api.openai.com/v1/models",
         env_var="OPENAI_API_KEY",
         console_url="https://platform.openai.com/api-keys",
-        preferred_models=(
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.3",
-            "gpt-5.3-mini",
-            "gpt-4.1",
-            "gpt-4o",
-            "gpt-4o-mini",
-        ),
-        tts_models=(
-            "gpt-4o-mini-tts",
-        ),
     ),
     Provider(
         id="opencode",
@@ -72,16 +57,6 @@ PROVIDERS: List[Provider] = [
         models_url="https://opencode.ai/zen/v1/models",
         env_var="OPENCODE_API_KEY",
         console_url="https://opencode.ai/auth",
-        preferred_models=(
-            "kimi-k3",
-            "kimi-k2.6",
-            "glm-5",
-            "glm-5.1",
-            "deepseek-v4-flash",
-            "deepseek-v4-pro",
-            "minimax-m3",
-            "deepseek-v4-flash-free",
-        ),
     ),
     Provider(
         id="cerebras",
@@ -91,14 +66,6 @@ PROVIDERS: List[Provider] = [
         models_url="https://api.cerebras.ai/v1/models",
         env_var="CEREBRAS_API_KEY",
         console_url="https://inference.cerebras.ai/",
-        preferred_models=(
-            "llama-3.3-70b",
-            "qwen3-coder-480b",
-            "qwen3-coder-32b",
-            "gpt-oss-120b",
-            "gpt-oss-20b",
-            "llama-3.1-8b",
-        ),
     ),
     Provider(
         id="groq",
@@ -108,24 +75,6 @@ PROVIDERS: List[Provider] = [
         models_url="https://api.groq.com/openai/v1/models",
         env_var="GROQ_API_KEY",
         console_url="https://console.groq.com/keys",
-        preferred_models=(
-            "openai/gpt-oss-120b",
-            "openai/gpt-oss-20b",
-            "groq/compound",
-            "groq/compound-mini",
-            "qwen/qwen3.6-27b",
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
-        ),
-        excluded_models=(
-            "canopylabs/orpheus-v1-english",
-            "canopylabs/orpheus-arabic-saudi",
-            "allam-2-7b",
-        ),
-        tts_models=(
-            "canopylabs/orpheus-v1-english",
-            "canopylabs/orpheus-arabic-saudi",
-        ),
     ),
     Provider(
         id="google",
@@ -135,17 +84,6 @@ PROVIDERS: List[Provider] = [
         models_url="https://generativelanguage.googleapis.com/v1beta/openai/models",
         env_var="GEMINI_API_KEY",
         console_url="https://aistudio.google.com/apikey",
-        preferred_models=(
-            "gemini-3.7-flash",
-            "gemini-3.5-flash",
-            "gemini-3-flash",
-            "gemini-2.5-flash",
-            "gemini-3-pro",
-            "gemini-2.5-pro",
-        ),
-        tts_models=(
-            "gemini-2.5-flash-preview-tts",
-        ),
     ),
     Provider(
         id="meta",
@@ -155,15 +93,6 @@ PROVIDERS: List[Provider] = [
         models_url="https://api.meta.ai/v1/models",
         env_var="MODEL_API_KEY",
         console_url="https://dev.meta.ai/",
-        preferred_models=(
-            "muse-spark-1.3",
-            "muse-spark-1.2",
-            "muse-spark-1.1",
-            "muse-wonder-1.0",
-            "muse-ember-1.0",
-            "muse-spark-1.3-contributor",
-            "muse-spark-1.2-contributor",
-        ),
     ),
 ]
 

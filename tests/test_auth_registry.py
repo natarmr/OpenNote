@@ -18,7 +18,9 @@ def test_registry_integrity():
         assert p.models_url.startswith("https://")
         assert p.env_var.endswith("_API_KEY") or p.env_var == "OPENCODE_API_KEY"
         assert p.console_url.startswith("https://")
-        assert p.preferred_models, f"{p.id} needs a preferred-model list"
+        assert not p.preferred_models, f"{p.id} must not hardcode model names"
+        assert not p.excluded_models, f"{p.id} must not hardcode model exclusions"
+        assert not p.tts_models, f"{p.id} must not hardcode TTS model names"
 
 
 def test_models_url_based_on_base_url():

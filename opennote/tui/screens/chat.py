@@ -2367,10 +2367,16 @@ class ChatScreen(Screen):
             return
         catalog = resolve_catalog(provider, msg.result)
         if catalog.source == "hardcoded":
-            self.transcript.add_error(
-                f"Could not load live models for {provider.id}. Showing OFFLINE suggestions "
-                "that may not be available. Run 'opennote auth models " + provider.id + "' to refresh."
-            )
+            if catalog.models:
+                self.transcript.add_error(
+                    f"Could not load live models for {provider.id}. Showing OFFLINE suggestions "
+                    f"that may not be available. Run 'opennote auth models {provider.id}' to refresh."
+                )
+            else:
+                self.transcript.add_error(
+                    f"Could not load live models for {provider.id} and no cached list exists. "
+                    f"Run 'opennote auth models {provider.id}' when online to fetch the inventory."
+                )
         elif catalog.source == "cache":
             self.transcript.add_info(catalog.describe())
         settings = AuthConfig().get(provider.id)
@@ -2404,10 +2410,16 @@ class ChatScreen(Screen):
             return
         catalog = resolve_catalog(provider, msg.result)
         if catalog.source == "hardcoded":
-            self.transcript.add_error(
-                f"Could not load live models for {provider.id}. Showing OFFLINE suggestions "
-                "that may not be available. Run 'opennote auth models " + provider.id + "' to refresh."
-            )
+            if catalog.models:
+                self.transcript.add_error(
+                    f"Could not load live models for {provider.id}. Showing OFFLINE suggestions "
+                    f"that may not be available. Run 'opennote auth models {provider.id}' to refresh."
+                )
+            else:
+                self.transcript.add_error(
+                    f"Could not load live models for {provider.id} and no cached list exists. "
+                    f"Run 'opennote auth models {provider.id}' when online to fetch the inventory."
+                )
         elif catalog.source == "cache":
             self.transcript.add_info(catalog.describe())
         current = getattr(self._client, "model", "") if self._client else ""

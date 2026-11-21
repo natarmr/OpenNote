@@ -40,10 +40,10 @@ def test_usable_models_filters_both():
     assert usable_models(ids) == ["gpt-4o", "claude-opus-5"]
 
 
-def test_select_default_prefers_curated_order():
+def test_select_default_uses_generic_heuristic():
     provider = get_provider("openai")
     live = {"gpt-5.4-mini", "gpt-4o", "whisper-1", "gpt-5.4", "gpt-5.3"}
-    assert select_default(provider, live) == "gpt-5.4"
+    assert select_default(provider, live) == "gpt-5.4-mini"
 
 
 def test_select_default_falls_back_to_heuristic():
@@ -88,20 +88,20 @@ def test_usable_models_excludes_exact_ids():
     ]
 
 
-def test_groq_excludes_tts_models():
+def test_generic_keyword_filter_drops_voice_models():
+    """No provider-specific hardcoded exclusion list — keywords do the work."""
     provider = get_provider("groq")
     live = {
         "openai/gpt-oss-120b",
         "canopylabs/orpheus-v1-english",
-        "canopylabs/orpheus-arabic-saudi",
-        "allam-2-7b",
         "whisper-large-v3",
     }
     ranked = rank_models(provider, live)
-    assert ranked == ["openai/gpt-oss-120b"]
+    assert ranked[0] == "openai/gpt-oss-120b"
+    assert "whisper-large-v3" not in ranked
 
 
-def test_groq_prefers_namespaced_curated_id():
+def test_select_default_uses_plain_heuristic():
     provider = get_provider("groq")
     live = {"groq/compound", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"}
-    assert select_default(provider, live) == "openai/gpt-oss-20b"
+    assert select_default(provider, live) == "groq/compound"

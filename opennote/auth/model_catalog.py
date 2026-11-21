@@ -1,10 +1,10 @@
 """Model-list resolution with a last-good live cache.
 
-The provider's ``preferred_models`` frontmatter list is a *hint*, not an
-inventory. It goes stale the moment a provider ships or retires a model. The
-TUI used to show it whenever live validation failed, with no indication that
-the list was a guess — which is exactly how a user ends up picking a model
-that doesn't exist.
+Built-in providers carry **no** hardcoded model names. The ``preferred_models``
+field now exists only so user-defined providers in ``opennote.json`` can supply
+optional hints; it is empty for every built-in. The TUI used to show those
+hints whenever live validation failed, with no indication the list was a guess
+— which is exactly how a user ended up picking a model that doesn't exist.
 
 This module gives one answer to "which models can I actually pick?":
 

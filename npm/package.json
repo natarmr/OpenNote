@@ -1,6 +1,6 @@
 {
   "name": "@natarmar/opennote",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "One-command npm/bun launcher for OpenNote — a private, grounded study harness for your own documents.",
   "license": "MIT",
   "repository": {

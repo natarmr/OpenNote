@@ -1,51 +1,49 @@
-# Get Started with OpenNote
+# Welcome to OpenNote
 
-**OpenNote** is a terminal-based, privacy-focused agentic harness for studying your own documents. Ingest sources, ask grounded questions with citations, and generate study artifacts — your data stays on your machine unless you choose a cloud provider.
+OpenNote is a small, local-first study assistant that lives in your terminal. You give it your PDFs, notes, or web pages; it indexes them on your machine; then you ask questions and get answers with citations back to the exact passages. No cloud indexing, no data harvesting — the only time anything leaves your computer is when you ask a model you chose a question.
 
-## Choose Your Path
+## Get it running
 
-### One-line install (recommended)
+The one-line installer handles Python, the package, and the `opennote` command for you:
 
 ```bash
 # macOS / Linux / Git Bash / WSL
 curl -fsSL https://raw.githubusercontent.com/natarmr/OpenNote/main/install | bash
 
-# Windows PowerShell (bare `curl` is an alias — use one of these)
+# Windows PowerShell — bare `curl` is an alias, so use one of these:
 curl.exe -fsSL https://raw.githubusercontent.com/natarmr/OpenNote/main/install | bash
 iwr -useb https://raw.githubusercontent.com/natarmr/OpenNote/main/install.ps1 | iex
 ```
 
-### From source (developers)
+Already have Python 3.10+ and prefer source? `pip install -e ".[dev]"`.
+
+See [Install & deploy](../1-INSTALLATION/index.md) if anything complains.
+
+## Connect a model (retrieval needs no key)
+
+Searching your documents works offline out of the box. To get generated answers, connect one provider:
 
 ```bash
-pip install -e ".[dev]"
-pytest -q   # full suite, 491/491 pass
+opennote auth add groq        # prompts for a key, checks it, picks a model
 ```
 
-See [Deploy](../1-INSTALLATION/index.md) for details and troubleshooting.
+Keys are stored in your OS keychain — never in a file. Prefer environment variables? `opennote auth add groq --env GROQ_API_KEY` reads the key from your shell instead. You can also just set `GROQ_API_KEY` and skip `auth add` entirely.
 
-## Prerequisites
+Run `opennote config --effective` any time to see what's connected and which default OpenNote will use.
 
-- **Python 3.10+** (`python3`, `python`, or `py` launcher)
-- **`opennote` on PATH** — verify with `opennote --help`
-  (fallback if the console script is missing: `py -m opennote --help`)
-- **An LLM provider key** for answers (retrieval works with no key):
-  `opennote auth add groq` (or `anthropic`, `openai`, `google`, …).
-  Keys live in the OS keychain, else `<PROVIDER>_API_KEY` env vars.
-
-## Your first 5 minutes
+## Your first five minutes
 
 ```bash
 opennote create my_notebook
 opennote ingest paper.pdf --notebook my_notebook
 opennote ask "What does the paper claim about retrieval?" --notebook my_notebook
-opennote            # launches the terminal UI
+opennote            # opens the interactive terminal UI
 ```
 
-In the TUI, `Tab` cycles `ask → search → studio`. Try `/mindmap <topic>`, then `/open` to view it.
+In the TUI, `Tab` moves between **ask → search → studio** (plus tutor/socratic/curriculum if you're in the mood to study). Try `/mindmap <topic>`, then `/open` to look at what it made. Press `F1` if you forget a command, or `Ctrl+P` to search all of them.
 
-## Next steps
+## Where to go next
 
-- [Features](../2-CORE-CONCEPTS/index.md) — how notebooks, retrieval, and grounded Q&A work
-- [User Guide](../3-USER-GUIDE/index.md) — every command with examples
-- [Deploy](../1-INSTALLATION/index.md) — install options and fixes
+- [How OpenNote thinks](../2-CORE-CONCEPTS/index.md) — notebooks, chunks, retrieval, grounding
+- [User guide](../3-USER-GUIDE/index.md) — every command, with examples
+- [Install & deploy](../1-INSTALLATION/index.md) — options and troubleshooting

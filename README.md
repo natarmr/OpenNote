@@ -19,7 +19,7 @@
 
 ---
 
-## ⚡ Quick start
+## Quick start
 
 ```bash
 pip install -e ".[dev]"
@@ -46,7 +46,7 @@ In a world dominated by Artificial Intelligence, having the ability to think and
 ---
 
 
-## 📦 Features
+## Features
 
 | Category | What you get |
 |----------|-------------|
@@ -60,7 +60,7 @@ In a world dominated by Artificial Intelligence, having the ability to think and
 | **Textual TUI** | Tab cycles `ask → search → studio → tutor → socratic → curriculum` (built-in education agents, global); `/studio` submenu; slash commands `/mindmap /study /faq /briefing /timeline /suggest /audio /video /open` · `/use <skill>` · `/skills /skill /plugins /agents /agent /capabilities /context /theme /help` + `/snake` waiting-room game |
 
 ---
-## 🆚 Open Notebook vs Google Notebook LM
+## Open Notebook vs Google Notebook LM
 
 | Feature | Open Notebook | Google Notebook LM | Advantage |
 |---------|---------------|--------------------|-----------|
@@ -74,7 +74,7 @@ In a world dominated by Artificial Intelligence, having the ability to think and
 
 ---
 
-## 🛠 Installation
+##  Installation
 
 **One-line (global):**
 
@@ -90,7 +90,7 @@ iwr -useb https://raw.githubusercontent.com/natarmr/OpenNote/main/install.ps1 | 
 
 *Warning:* never run bare `pip install opennote` — that PyPI name belongs to an unrelated video-API SDK. The installers above fetch OpenNote from the GitHub tarball instead.
 ---
-## 🧭 Usage
+##  Usage
 
 ### Notebook management
 
@@ -147,7 +147,7 @@ opennote chat --provider local            # or: opennote ask "..." --provider lo
 
 Keys stored in the OS keychain when available, else read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, `CEREBRAS_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`. Validation requires network; `--no-verify` stores without checking.
 
-## 🧩 Capabilities (runtime‑probed, advertised to the model)
+##  Capabilities (runtime‑probed, advertised to the model)
 
 - **Tavily web search** requires `TAVILY_API_KEY`; otherwise degrades gracefully
 - **TTS** resolves groq → openai → gemini → edge-tts; falls back to markdown transcript
@@ -155,7 +155,7 @@ Keys stored in the OS keychain when available, else read from `ANTHROPIC_API_KEY
 - **Retrieval** is always available (local embeddings + ChromaDB)
 
 ---
-## ⚙️ Configuration (`opennote.json`)
+##  Configuration (`opennote.json`)
 
 All non-secret settings live in one layered JSON/JSONC file. Keys stay in the OS
 keychain (see `opennote auth`); `auth.json` keeps only provider→model mappings.
@@ -221,7 +221,7 @@ source is shown in `opennote auth list` and `opennote config --effective`.
 
 ---
 
-## 🛤 Roadmap (future)
+## Roadmap (future)
 
 - Images (OCR) support
 - Non‑terminal UI surfaces
@@ -230,6 +230,6 @@ source is shown in `opennote auth list` and `opennote config --effective`.
 
 ---
 
-## 📄 License
+##  License
 
 MIT — see `LICENSE` for details.

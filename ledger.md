@@ -679,3 +679,9 @@ flow; allow a curated glyph set and colors in the TUI.
 | L223 | MED | tui/screens/chat.py:_sync_meta | With no live client, stale notebook provider/model metadata was displayed as the active selection | **fixed** | Only a live client defines active provider/model; otherwise no provider | TUI suites |
 | L224 | MED | tests/conftest.py | TUI tests wrote last_used into the real ~/.opennote/opennote.json (source of the stale groq/qwen value) | **fixed** | Autouse OPENNOTE_CONFIG_HOME isolation fixture | full suite |
 | L225 | LOW | pyproject.toml, docs/1-INSTALLATION | Docs advertised `pip install -e ".[local]"` but no `local` extra existed, so the offline GGUF setup silently installed nothing extra | **fixed** | Added `local = ["llama-cpp-python>=0.2.0"]` | `npm test` + 619-test sweep |
+
+## Wave 19 - Model menu provenance (executed)
+
+| ID | Sev | Location | Description | Status | Fix | Tests |
+|----|-----|----------|-------------|--------|-----|-------|
+| L225 | HIGH | tui/screens/chat.py:_on_models_result_for_switch | Live model fetch failure silently showed hardcoded preferred_models as if they were available - stale/out-of-date model menu | **fixed** | New auth/model_catalog.py with live/cache/hardcoded provenance, last-good live cache, keyword-filter no longer hides live models; both switch and connect menus label their source | tests/test_model_catalog.py (6) |

@@ -43,7 +43,7 @@
 ## Conventions
 
 - Match file-local style over ruff ideals. TUI code catches `Exception` broadly by design
-- **`ledger.md`** gets one row per fix (`| L<n> | SEV | location | ... |`) — **next is L225**. **`engg_choices.md`** gets one per design call (`## E<n>`) — **next is E30**
+- **`ledger.md`** gets one row per fix (`| L<n> | SEV | location | ... |`) — **next is L226**. **`engg_choices.md`** gets one per design call (`## E<n>`) — **next is E30**
 - `security/scan.py` is *telemetry, not a gate*, so the `<source>` delimiter plus an explicit prompt rule is the whole prompt-injection defense. Every template in `prompt_templates/` that receives retrieved text must state the data-not-instructions rule; `security/test_prompt_injection_rule.py` enforces this and classifies every template deliberately
 - **A silent fallback is a bug, not graceful degradation.** A `logger.warning` proves nothing: the TUI pins the `opennote` logger to `WARNING` with a `NullHandler`. Where a feature can degrade, assert on the *result* so a permanently dead path cannot look healthy — the Tavily enrichment fetch had been dead for its whole life behind an `except Exception` and nobody noticed
 - **Do not tune `_TEXT_SUPPORT_THRESHOLD` from `tests/security/test_grounding_calibration.py`.** That corpus is an adversarial boundary probe, not a sample; it once looked like a 50% false-drop rate. Measure with `py scripts/measure_grounding.py --notebook notebook-1 --provider groq`, which costs LLM calls. Current value 0.6 is measured, not guessed

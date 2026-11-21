@@ -2356,7 +2356,7 @@ class ChatScreen(Screen):
             self._on_models_result_for_switch(msg)
             return
         from opennote.auth.config import AuthConfig
-        from opennote.auth.models import rank_models
+        from opennote.auth.model_catalog import resolve as resolve_catalog
         from opennote.auth.registry import get_provider
 
         self.prompt.set_idle()
@@ -2365,38 +2365,18 @@ class ChatScreen(Screen):
         except ValueError as e:
             self.transcript.add_error(str(e))
             return
-        settings = AuthConfig().get(provider.id)
-        result = msg.result
-        if result is not None and result.ok:
-            models = rank_models(provider, result.models)
-        elif result is None:
-            # Validation raised (network/DNS/timeout) — never offer stale
-            # preferred models as if they were live for this endpoint.
+        catalog = resolve_catalog(provider, msg.result)
+        if catalog.source == "hardcoded":
             self.transcript.add_error(
-                f"Could not validate {provider.label} ({getattr(msg, 'error', 'unknown error')}). "
-                "Check connectivity or endpoint, then retry /connect."
+                f"Could not load live models for {provider.id}. Showing OFFLINE suggestions "
+                "that may not be available. Run 'opennote auth models " + provider.id + "' to refresh."
             )
-            return
-        else:
-            if result.error == "invalid-key":
-                self.transcript.add_error("Invalid API key - could not fetch models.")
-            elif result.error == "network":
-                self.transcript.add_info(
-                    "Could not reach the model catalog - using default models. "
-                    "Run 'opennote auth verify <provider>' to refresh."
-                )
-            else:
-                self.transcript.add_info(
-                    f"Model catalog returned an error ({result.error}) - using default models."
-                )
-            self.transcript.add_info(
-                "Offline model list is a best guess; IDs may differ on custom endpoints."
-            )
-            models = list(provider.preferred_models)
-
-        if settings and settings.model:
-            if settings.model not in models:
-                models.insert(0, settings.model)
+        elif catalog.source == "cache":
+            self.transcript.add_info(catalog.describe())
+        settings = AuthConfig().get(provider.id)
+        models = list(catalog.models)
+        if settings and settings.model and settings.model not in models:
+            models.insert(0, settings.model)
         if not models:
             self._finish_connect(provider.id, settings.model if settings else None)
             return
@@ -2407,14 +2387,13 @@ class ChatScreen(Screen):
             f"Connect {provider.id}: choose model",
             items,
             on_pick=self._on_connect_model_picked(provider.id),
-            subtitle=f"Live models for {provider.label}. * = previously selected.",
+            subtitle=f"{catalog.describe()}  |  * = previously selected",
             hint="type to filter - enter select - esc cancel",
         )
 
     def _on_models_result_for_switch(self, msg: ModelsResultMsg) -> None:
         """Switch-model variant of the validation result (see _open_model_dialog)."""
-        from opennote.auth.config import AuthConfig
-        from opennote.auth.models import rank_models
+        from opennote.auth.model_catalog import resolve as resolve_catalog
         from opennote.auth.registry import get_provider
 
         self.prompt.set_idle()
@@ -2423,22 +2402,29 @@ class ChatScreen(Screen):
         except ValueError as e:
             self.transcript.add_error(str(e))
             return
+        catalog = resolve_catalog(provider, msg.result)
+        if catalog.source == "hardcoded":
+            self.transcript.add_error(
+                f"Could not load live models for {provider.id}. Showing OFFLINE suggestions "
+                "that may not be available. Run 'opennote auth models " + provider.id + "' to refresh."
+            )
+        elif catalog.source == "cache":
+            self.transcript.add_info(catalog.describe())
         current = getattr(self._client, "model", "") if self._client else ""
-        if msg.result is not None and msg.result.ok:
-            models = rank_models(provider, msg.result.models)
-        else:
-            models = list(provider.preferred_models)
+        models = list(catalog.models)
         if current and current not in models:
             models.insert(0, current)
         if not models:
             self.transcript.add_info("No models available.")
             return
-        items = [(m, f"{'* ' if m == current else ''}{m}") for m in models]
+        items = [(m, f"{'* ' if m == current else '  '}{m}") for m in models]
         item_list(
             self.app,
-            f"Switch model ({provider.id})",
+            "Switch model" if catalog.is_live else "Switch model (offline list)",
             items,
             on_pick=self._on_model_picked,
+            subtitle=f"{provider.id}  |  {catalog.describe()}",
+            hint="type to filter - enter select - esc cancel",
         )
 
     def _on_connect_model_picked(self, pid: str):
@@ -2495,23 +2481,26 @@ class ChatScreen(Screen):
             self._run_validate_models(provider_id, key, flow="switch")
             return
         settings = AuthConfig().get(provider_id)
+        models: List[str] = []
         if settings and settings.model:
             models = [settings.model]
-        models += [m for m in provider.preferred_models if m not in models]
-
         if current and current not in models:
             models.insert(0, current)
         if not models:
-            self.transcript.add_info("No models available.")
+            self.transcript.add_info(
+                "No key stored for this provider. Run /connect to load its live model list."
+            )
             return
+        self.transcript.add_info(
+            "No key stored - showing your current model only. Run /connect for live models."
+        )
         items = [(m, f"{'* ' if m == current else '  '}{m}") for m in models]
-        subtitle = f"Provider: {provider_id}  |  current: {current or 'none'}"
         item_list(
             self.app,
-            "Switch model",
+            "Switch model (offline list)",
             items,
             on_pick=self._on_model_picked,
-            subtitle=subtitle,
+            subtitle=f"{provider_id}  |  offline - run /connect to load live models",
             hint="type to filter - enter select - esc cancel",
         )
 
